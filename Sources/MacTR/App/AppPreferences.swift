@@ -25,6 +25,78 @@ enum ScheduleCloseAction: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum PerformanceMode: String, CaseIterable, Identifiable, Sendable {
+    case eco
+    case balanced
+    case smooth
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .eco: "Eco"
+        case .balanced: "Balanced"
+        case .smooth: "Smooth"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .eco: "Lowest CPU use; 0.5–2 fps with slower metric refresh."
+        case .balanced: "Recommended for always-on use; 1–4 fps."
+        case .smooth: "Smoother 2–10 fps animation with higher CPU use."
+        }
+    }
+
+    var idleFrameInterval: Double {
+        switch self {
+        case .eco: 2.0
+        case .balanced: 1.0
+        case .smooth: 0.5
+        }
+    }
+
+    var activeFramesPerSecond: Double {
+        switch self {
+        case .eco: 2
+        case .balanced: 4
+        case .smooth: 10
+        }
+    }
+
+    var fanFramesPerSecond: Double {
+        switch self {
+        case .eco: 1
+        case .balanced: 2
+        case .smooth: 6
+        }
+    }
+
+    var fastMetricsInterval: Double {
+        switch self {
+        case .eco: 2
+        case .balanced: 1
+        case .smooth: 0.5
+        }
+    }
+
+    var slowMetricsInterval: Double {
+        switch self {
+        case .eco: 6
+        case .balanced: 3
+        case .smooth: 2
+        }
+    }
+
+    var agentMetricsInterval: Double {
+        switch self {
+        case .eco: 8
+        case .balanced: 4
+        case .smooth: 2
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class AppPreferences {
@@ -32,6 +104,7 @@ final class AppPreferences {
         static let displaySet = "displaySet"
         static let brightness = "brightness"
         static let refreshInterval = "refreshInterval"
+        static let performanceMode = "performanceMode"
         static let rotateDisplay = "rotateDisplay"
         static let autoShowPreview = "autoShowPreviewWhenDisconnected"
         static let scheduleEnabled = "dailyScheduleEnabled"
@@ -39,6 +112,10 @@ final class AppPreferences {
         static let automaticStartEnabled = "dailyScheduleAutomaticStartEnabled"
         static let startMinutes = "dailyScheduleStartMinutes"
         static let closeMinutes = "dailyScheduleCloseMinutes"
+        static let customScriptEnabled = "customScriptEnabled"
+        static let customScriptPath = "customScriptPath"
+        static let customScriptDisplayName = "customScriptDisplayName"
+        static let customScriptIntervalSeconds = "customScriptIntervalSeconds"
     }
 
     private let defaults: UserDefaults
@@ -58,17 +135,24 @@ final class AppPreferences {
         }
     }
 
-    var refreshInterval: Double {
+    var performanceMode: PerformanceMode {
         didSet {
-            let allowed = [0.5, 1.0, 2.0]
-            let normalized = allowed.min(by: {
-                abs($0 - refreshInterval) < abs($1 - refreshInterval)
-            }) ?? 0.5
-            if refreshInterval != normalized {
-                refreshInterval = normalized
-                return
+            save(performanceMode.rawValue, forKey: Key.performanceMode)
+            defaults.set(performanceMode.idleFrameInterval, forKey: Key.refreshInterval)
+        }
+    }
+
+    /// Compatibility bridge for v1.4.0 settings/tests. New UI uses `performanceMode`.
+    var refreshInterval: Double {
+        get { performanceMode.idleFrameInterval }
+        set {
+            performanceMode = if newValue >= 1.5 {
+                .eco
+            } else if newValue <= 0.6 {
+                .smooth
+            } else {
+                .balanced
             }
-            save(refreshInterval, forKey: Key.refreshInterval)
         }
     }
 
@@ -117,6 +201,47 @@ final class AppPreferences {
         }
     }
 
+    var customScriptEnabled: Bool {
+        didSet { save(customScriptEnabled, forKey: Key.customScriptEnabled) }
+    }
+
+    var customScriptPath: String {
+        didSet { save(customScriptPath, forKey: Key.customScriptPath) }
+    }
+
+    var customScriptDisplayName: String {
+        didSet {
+            let normalized = customScriptDisplayName
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespaces)
+            let capped = String(normalized.prefix(32))
+            if customScriptDisplayName != capped {
+                customScriptDisplayName = capped
+                return
+            }
+            save(customScriptDisplayName, forKey: Key.customScriptDisplayName)
+        }
+    }
+
+    var customScriptIntervalSeconds: Int {
+        didSet {
+            let clamped = min(max(customScriptIntervalSeconds, 5), 86_400)
+            if customScriptIntervalSeconds != clamped {
+                customScriptIntervalSeconds = clamped
+                return
+            }
+            save(customScriptIntervalSeconds, forKey: Key.customScriptIntervalSeconds)
+        }
+    }
+
+    var customScriptConfiguration: CustomScriptConfiguration {
+        CustomScriptConfiguration(
+            enabled: customScriptEnabled,
+            path: customScriptPath,
+            displayName: customScriptDisplayName,
+            intervalSeconds: customScriptIntervalSeconds)
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
 
@@ -131,11 +256,15 @@ final class AppPreferences {
         brightness = defaults.object(forKey: Key.brightness) == nil
             ? 5 : min(max(defaults.integer(forKey: Key.brightness), 1), 10)
 
-        let storedInterval = defaults.object(forKey: Key.refreshInterval) == nil
-            ? 0.5 : defaults.double(forKey: Key.refreshInterval)
-        refreshInterval = [0.5, 1.0, 2.0].min(by: {
-            abs($0 - storedInterval) < abs($1 - storedInterval)
-        }) ?? 0.5
+        if let rawMode = defaults.string(forKey: Key.performanceMode),
+           let mode = PerformanceMode(rawValue: rawMode)
+        {
+            performanceMode = mode
+        } else {
+            // v1.4.1 deliberately moves the default away from the old 15fps-heavy
+            // behavior. Users can opt back into Smooth from Settings.
+            performanceMode = .balanced
+        }
 
         rotateDisplay = defaults.bool(forKey: Key.rotateDisplay)
         autoShowPreviewWhenDisconnected = defaults.bool(forKey: Key.autoShowPreview)
@@ -157,6 +286,17 @@ final class AppPreferences {
         closeMinutes = Self.normalizeMinutes(
             defaults.object(forKey: Key.closeMinutes) == nil
                 ? 23 * 60 : defaults.integer(forKey: Key.closeMinutes))
+
+        customScriptEnabled = defaults.bool(forKey: Key.customScriptEnabled)
+        customScriptPath = defaults.string(forKey: Key.customScriptPath) ?? ""
+        customScriptDisplayName =
+            defaults.string(forKey: Key.customScriptDisplayName) ?? ""
+        customScriptIntervalSeconds = min(
+            max(
+                defaults.object(forKey: Key.customScriptIntervalSeconds) == nil
+                    ? 60 : defaults.integer(forKey: Key.customScriptIntervalSeconds),
+                5),
+            86_400)
     }
 
     nonisolated static func normalizeMinutes(_ value: Int) -> Int {

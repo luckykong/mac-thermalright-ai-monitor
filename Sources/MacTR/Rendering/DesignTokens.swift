@@ -64,22 +64,36 @@ enum Layout {
     static let panelHeight = height - 2 * margin
     static let panelY = margin
 
-    // The dashboard deliberately uses a non-uniform split: a compact telemetry
-    // grid on the left and a wide two-column AI activity panel on the right.
+    // Named non-uniform regions. The system side uses three compact cards above
+    // a network/script/clock row; AI agents remain the largest visual area.
     static let systemX = margin
-    static let systemWidth = 630
-    static let systemColumnWidth = (systemWidth - gap) / 2
-    static let systemRowHeight = (panelHeight - 2 * gap) / 3
+    static let systemWidth = 820
+    static let systemTopHeight = 148
+    static let systemBottomY = panelY + systemTopHeight + gap
+    static let systemBottomHeight = panelHeight - systemTopHeight - gap
+
+    static let systemTopColumnWidth = (systemWidth - 2 * gap) / 3
+    static let networkWidth = 330
+    static let scriptWidth = 280
+    static let clockWidth = systemWidth - networkWidth - scriptWidth - 2 * gap
 
     static let agentsX = systemX + systemWidth + gap
     static let agentsWidth = width - margin - agentsX
 
-    static func systemCardX(_ column: Int) -> Int {
-        systemX + column * (systemColumnWidth + gap)
+    static func systemTopX(_ column: Int) -> Int {
+        systemX + column * (systemTopColumnWidth + gap)
     }
 
-    static func systemCardY(_ row: Int) -> Int {
-        panelY + row * (systemRowHeight + gap)
+    static let networkX = systemX
+    static let scriptX = networkX + networkWidth + gap
+    static let clockX = scriptX + scriptWidth + gap
+
+    static func systemBottomX(_ column: Int) -> Int {
+        switch column {
+        case 0: networkX
+        case 1: scriptX
+        default: clockX
+        }
     }
 }
 

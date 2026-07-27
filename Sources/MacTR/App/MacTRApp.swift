@@ -7,6 +7,7 @@
 
 import AppKit
 import os
+import ScreenCaptureKit
 import SwiftUI
 
 private let mactrLogger = Logger(subsystem: "com.beret21.MacTR", category: "main")
@@ -20,6 +21,11 @@ func log(_ message: String) {
 @main
 struct MacTREntry {
     static func main() {
+        if CommandLine.arguments.contains("--smc-test") {
+            runSMCTest()
+            return
+        }
+
         // CLI mode
         if CommandLine.arguments.contains("--cli") {
             runCLI()
@@ -32,7 +38,7 @@ struct MacTREntry {
             return
         }
 
-        // Demo mode: drive the LCD with polished fake data (for photos / showcase).
+        // Showcase mode: drive the LCD with deterministic sample data.
         if CommandLine.arguments.contains("--demo") {
             runDemo()
             return
@@ -50,16 +56,13 @@ struct MacTREntry {
             return
         }
 
-        if CommandLine.arguments.contains("--menu-snapshot") {
-            runMenuSnapshot()
-            return
-        }
-
         // Snapshot mode: render one frame and save as PNG
-        // Usage: --snapshot path.png [--cores N]
+        // Usage: --snapshot path.png [--cores N] [--redact-agents]
         if CommandLine.arguments.contains("--snapshot") {
             let renderer = MonitorRenderer()
             let simCores = parseFlag(CommandLine.arguments, flag: "--cores")
+            renderer.redactAgentDetails =
+                CommandLine.arguments.contains("--redact-agents")
 
             // Prime metrics collection (required for real data render)
             renderer.startMetrics()
@@ -75,14 +78,17 @@ struct MacTREntry {
             }
 
             if let image {
-                let url = URL(fileURLWithPath: CommandLine.arguments.last == "--snapshot"
-                    ? "snapshot.png" : CommandLine.arguments[CommandLine.arguments.firstIndex(of: "--snapshot")! + 1])
+                let snapshotIndex = CommandLine.arguments.firstIndex(of: "--snapshot")!
+                let path = snapshotIndex + 1 < CommandLine.arguments.count
+                    ? CommandLine.arguments[snapshotIndex + 1] : "snapshot.png"
+                let url = URL(fileURLWithPath: path)
                 if let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) {
                     CGImageDestinationAddImage(dest, image, nil)
                     CGImageDestinationFinalize(dest)
                     log("[Snapshot] Saved to \(url.path)")
                 }
             }
+            renderer.stopMetrics()
             return
         }
 
@@ -102,6 +108,16 @@ struct MacTREntry {
         let delegate = StatusBarController()
         app.delegate = delegate
         app.run()
+    }
+}
+
+private func runSMCTest() {
+    let collector = SystemMetricsCollector()
+    let snapshot = collector.collectFans()
+    print("[SMC] available=\(snapshot.available) fans=\(snapshot.fans.count)")
+    for fan in snapshot.fans {
+        let maxValue = fan.maxRPM.map { String(format: "%.0f", $0) } ?? "N/A"
+        print("[SMC] \(fan.name): \(String(format: "%.0f", fan.currentRPM)) RPM max=\(maxValue)")
     }
 }
 
@@ -128,52 +144,39 @@ private func runSettingsSnapshot() {
     preferences.automaticStartEnabled = true
     preferences.startMinutes = 8 * 60
     preferences.closeMinutes = 23 * 60
+    preferences.customScriptEnabled = true
+    preferences.customScriptPath = "/Users/me/Scripts/backup-status.zsh"
+    preferences.customScriptDisplayName = "BACKUP"
+    preferences.customScriptIntervalSeconds = 60
 
     let state = AppState(preferences: preferences)
+    state.setDocumentationCustomScriptSnapshot(CustomScriptSnapshot(
+        state: .succeeded,
+        title: "BACKUP",
+        output: "STATUS  OK\nREPOS   12\nLAST    19:30\nNEXT    20:00",
+        message: nil,
+        lastRunAt: Date().addingTimeInterval(-30),
+        exitCode: 0))
     let launchAtLogin = LaunchAtLoginController(availabilityOverride: true)
     let rootView = SettingsView(
         state: state,
         launchAtLogin: launchAtLogin,
         pauseDisplay: {},
-        resumeDisplay: {})
+        resumeDisplay: {},
+        initialTab: .customCard)
         .preferredColorScheme(.dark)
         .background(SwiftUI.Color(nsColor: .windowBackgroundColor))
 
     let url = URL(fileURLWithPath: args[index + 1])
     if renderDocumentationView(
         rootView,
-        size: NSSize(width: 560, height: 620),
+        size: NSSize(width: 580, height: 760),
         title: "MacTR Settings",
         outputURL: url)
     {
         print("[Settings Snapshot] wrote \(url.path)")
     } else {
         print("[Settings Snapshot] failed")
-    }
-}
-
-@MainActor
-private func runMenuSnapshot() {
-    let args = CommandLine.arguments
-    guard let index = args.firstIndex(of: "--menu-snapshot"),
-          index + 1 < args.count
-    else {
-        print("[Menu Snapshot] usage: --menu-snapshot output.png")
-        return
-    }
-
-    let rootView = MenuDocumentationView()
-        .preferredColorScheme(.dark)
-    let url = URL(fileURLWithPath: args[index + 1])
-    if renderDocumentationView(
-        rootView,
-        size: NSSize(width: 360, height: 610),
-        title: "MacTR Menu",
-        outputURL: url)
-    {
-        print("[Menu Snapshot] wrote \(url.path)")
-    } else {
-        print("[Menu Snapshot] failed")
     }
 }
 
@@ -264,11 +267,16 @@ final class PreviewController: NSObject, NSApplicationDelegate, NSWindowDelegate
         if CommandLine.arguments.contains("--test-flash") {
             renderer.enableTestFlash(seconds: 10)
         }
-        // 10fps so the breathing/blink animations look smooth on-screen (metrics
-        // themselves are cached and only recomputed every ~2s in the background)
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
-        }
+        timer = Timer.scheduledTimer(
+            timeInterval: 0.125,
+            target: self,
+            selector: #selector(refreshTimerFired),
+            userInfo: nil,
+            repeats: true)
+        refresh()
+    }
+
+    @objc private func refreshTimerFired() {
         refresh()
     }
 
@@ -306,8 +314,13 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
     private var previewWindow: NSWindow?
     private var previewImageView: NSImageView?
     private var previewTimer: Timer?
+    private var previewManuallyRequested = false
     private var settingsWindow: NSWindow?
     private var scheduleWindow: NSWindow?
+    private var documentationCaptureWindow: NSWindow?
+    private var documentationCaptureTimer: Timer?
+    private var documentationSnapshotURL: URL?
+    private var documentationSnapshotDeadline: Date?
 
     // Menu items that need updating
     private var statusMenuItem: NSMenuItem!
@@ -370,11 +383,26 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
             self?.updatePreviewForConnection()
         }
 
-        // Timer to refresh menu + icon
-        updateTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.updateIcon()
-                self?.updateMenuItems()
+        updateTimer = Timer.scheduledTimer(
+            timeInterval: 1.0,
+            target: self,
+            selector: #selector(updateStatusTimerFired),
+            userInfo: nil,
+            repeats: true)
+
+        // Documentation helper: open and optionally capture the real NSStatusItem
+        // menu so docs never drift from the production menu implementation.
+        if let snapshotIndex = CommandLine.arguments.firstIndex(of: "--menu-snapshot"),
+           snapshotIndex + 1 < CommandLine.arguments.count
+        {
+            let outputURL = URL(
+                fileURLWithPath: CommandLine.arguments[snapshotIndex + 1])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                self?.openNativeMenuForDocumentation(snapshotURL: outputURL)
+            }
+        } else if CommandLine.arguments.contains("--open-menu") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.openNativeMenuForDocumentation()
             }
         }
     }
@@ -389,6 +417,11 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    @objc private func updateStatusTimerFired() {
+        updateIcon()
+        updateMenuItems()
     }
 
     // MARK: - NSMenuDelegate
@@ -475,7 +508,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
         menu = NSMenu()
 
         let version = Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.0"
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.1"
         versionMenuItem = NSMenuItem(title: "MacTR v\(version)", action: nil, keyEquivalent: "")
         versionMenuItem.isEnabled = false
         menu.addItem(versionMenuItem)
@@ -596,6 +629,134 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
         updateMenuItems()
     }
 
+    /// Opens the production NSMenu over a small host window. This exists only
+    /// for automated documentation capture; all menu items and state are the
+    /// exact same instances attached to the live status item.
+    private func openNativeMenuForDocumentation(snapshotURL: URL? = nil) {
+        let size = NSSize(width: 420, height: 620)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false)
+        window.title = "MacTR Native Menu"
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = .windowBackgroundColor
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        documentationCaptureWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+
+        guard let view = window.contentView else { return }
+        if let snapshotURL {
+            let hostWindowID = CGWindowID(window.windowNumber)
+            let processID = ProcessInfo.processInfo.processIdentifier
+            try? FileManager.default.removeItem(at: snapshotURL)
+            try? FileManager.default.removeItem(
+                at: snapshotURL.appendingPathExtension("partial"))
+            documentationSnapshotURL = snapshotURL
+            documentationSnapshotDeadline = Date().addingTimeInterval(15)
+            let captureTimer = Timer(
+                timeInterval: 0.1,
+                target: self,
+                selector: #selector(checkNativeMenuDocumentationCapture),
+                userInfo: nil,
+                repeats: true)
+            documentationCaptureTimer = captureTimer
+            RunLoop.main.add(captureTimer, forMode: .eventTracking)
+
+            Task.detached {
+                try? await Task.sleep(for: .milliseconds(700))
+                _ = await Self.captureNativeMenuWindow(
+                    processID: processID,
+                    excluding: hostWindowID,
+                    outputURL: snapshotURL)
+            }
+        }
+        menu.popUp(
+            positioning: nil,
+            at: NSPoint(x: 24, y: view.bounds.height - 24),
+            in: view)
+    }
+
+    nonisolated private static func captureNativeMenuWindow(
+        processID: pid_t,
+        excluding hostWindowID: CGWindowID,
+        outputURL: URL
+    ) async -> Bool {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: true)
+            let candidates = content.windows.filter { window in
+                window.owningApplication?.processID == processID
+                    && window.windowID != hostWindowID
+                    && window.isOnScreen
+                    && window.frame.width >= 120
+                    && window.frame.height >= 120
+            }
+            guard let menuWindow = candidates.max(by: { lhs, rhs in
+                if lhs.windowLayer == rhs.windowLayer {
+                    return lhs.frame.height < rhs.frame.height
+                }
+                return lhs.windowLayer < rhs.windowLayer
+            }) else {
+                log("[Documentation] Native menu window was not found")
+                return false
+            }
+
+            let filter = SCContentFilter(desktopIndependentWindow: menuWindow)
+            let configuration = SCStreamConfiguration()
+            configuration.width = max(1, Int(menuWindow.frame.width * 2))
+            configuration.height = max(1, Int(menuWindow.frame.height * 2))
+            configuration.showsCursor = false
+            let image = try await SCScreenshotManager.captureImage(
+                contentFilter: filter,
+                configuration: configuration)
+
+            let partialURL = outputURL.appendingPathExtension("partial")
+            guard let destination = CGImageDestinationCreateWithURL(
+                partialURL as CFURL,
+                "public.png" as CFString,
+                1,
+                nil)
+            else { return false }
+            CGImageDestinationAddImage(destination, image, nil)
+            let success = CGImageDestinationFinalize(destination)
+            if success {
+                try? FileManager.default.removeItem(at: outputURL)
+                try FileManager.default.moveItem(at: partialURL, to: outputURL)
+                log("[Documentation] Native menu saved to \(outputURL.path)")
+            }
+            return success
+        } catch {
+            log("[Documentation] Native menu capture failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    @objc private func checkNativeMenuDocumentationCapture() {
+        let outputExists = documentationSnapshotURL.map {
+            FileManager.default.fileExists(atPath: $0.path)
+        } ?? false
+        let timedOut = documentationSnapshotDeadline.map { Date() >= $0 } ?? true
+        guard outputExists || timedOut else { return }
+        finishNativeMenuDocumentationCapture(success: outputExists)
+    }
+
+    private func finishNativeMenuDocumentationCapture(success: Bool) {
+        documentationCaptureTimer?.invalidate()
+        documentationCaptureTimer = nil
+        documentationSnapshotURL = nil
+        documentationSnapshotDeadline = nil
+        menu.cancelTracking()
+        documentationCaptureWindow?.orderOut(nil)
+        print(success
+            ? "[Menu Snapshot] wrote native menu"
+            : "[Menu Snapshot] failed")
+        NSApp.terminate(nil)
+    }
+
     private func updateMenuItems() {
         launchAtLogin.refresh()
 
@@ -637,12 +798,16 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
     // MARK: - Preview Window (auto-fallback when LCD is disconnected)
 
     private func updatePreviewForConnection() {
-        if appState.isPaused || appState.isConnected
-            || !preferences.autoShowPreviewWhenDisconnected
-        {
+        if appState.isPaused {
+            previewManuallyRequested = false
             hidePreview()
-        } else {
+        } else if previewManuallyRequested
+                    || (!appState.isConnected
+                        && preferences.autoShowPreviewWhenDisconnected)
+        {
             showPreview()
+        } else {
+            hidePreview()
         }
     }
 
@@ -669,20 +834,28 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
         previewWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        appState.setPreviewActive(true)
 
-        if previewTimer == nil {
-            // 10fps for smooth breathing/blink (metrics are cached, recomputed ~2s)
-            previewTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.refreshPreview() }
-            }
-            refreshPreview()
-        }
+        previewTimer?.invalidate()
+        previewTimer = Timer.scheduledTimer(
+            timeInterval: 1 / max(
+                preferences.performanceMode.activeFramesPerSecond, 1),
+            target: self,
+            selector: #selector(previewTimerFired),
+            userInfo: nil,
+            repeats: true)
+        refreshPreview()
     }
 
     private func hidePreview() {
         previewTimer?.invalidate()
         previewTimer = nil
         previewWindow?.orderOut(nil)
+        appState.setPreviewActive(false)
+    }
+
+    @objc private func previewTimerFired() {
+        refreshPreview()
     }
 
     private func refreshPreview() {
@@ -693,6 +866,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     @objc private func showPreviewManually() {
         guard !appState.isPaused else { return }
+        previewManuallyRequested = true
         showPreview()
     }
 
@@ -701,6 +875,8 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
         guard let window = notification.object as? NSWindow, window == previewWindow else { return }
         previewTimer?.invalidate()
         previewTimer = nil
+        previewManuallyRequested = false
+        appState.setPreviewActive(false)
     }
 
     // MARK: - Actions
@@ -776,7 +952,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
             window.title = "MacTR Settings"
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 560, height: 620))
+            window.setContentSize(NSSize(width: 580, height: 760))
             window.center()
             settingsWindow = window
         }
@@ -833,7 +1009,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     private var appVersion: String {
         Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.0"
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.1"
     }
 }
 
@@ -974,15 +1150,15 @@ private func downscaleImage(_ image: CGImage, _ w: Int, _ h: Int) -> CGImage? {
     return ctx.makeImage()
 }
 
-// MARK: - Demo Mode (showcase fake data on the LCD)
+// MARK: - Showcase Mode
 
-/// Drive the LCD with polished demo data at 15fps — for photos and the README.
-/// Stop the running MacTR first (it holds the device); Ctrl+C to end the demo.
+/// Drive the LCD with deterministic sample data at 15fps.
+/// Stop the running MacTR first (it holds the device); Ctrl+C to end.
 private func runDemo() {
     let brightness = parseFlag(CommandLine.arguments, flag: "-b") ?? 5
     let rotate = CommandLine.arguments.contains("--rotate")
 
-    log("[Demo] Showcase mode — fake data")
+    log("[Demo] Showcase mode — sample data")
     let device = USBDevice()
     do { try device.open() } catch {
         print("[Demo][ERROR] open failed: \(error) — stop the running MacTR first")
@@ -993,8 +1169,8 @@ private func runDemo() {
     catch { print("[Demo][ERROR] handshake failed: \(error)"); return }
 
     let renderer = MonitorRenderer()
-    renderer.demoMode = true                 // fake data; no real metrics needed
-    print("[Demo] Sending demo frames at 15fps (Ctrl+C to stop)...")
+    renderer.demoMode = true
+    print("[Demo] Sending showcase frames at 15fps (Ctrl+C to stop)...")
     signal(SIGINT, SIG_DFL)
     while true {
         autoreleasepool {

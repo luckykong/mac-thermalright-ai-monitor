@@ -219,6 +219,7 @@ final class SystemMetricsCollector: @unchecked Sendable {
     private var smcConn: io_connect_t = 0
     private var smcOpened = false
     private var smcLogOnce = true
+    private var lastSMCOpenAttempt: Date?
 
     // MARK: - CPU
 
@@ -763,19 +764,34 @@ final class SystemMetricsCollector: @unchecked Sendable {
     @discardableResult
     private func openSMC() -> Bool {
         if smcOpened { return true }
+        let diagnostics = CommandLine.arguments.contains("--smc-test")
+        if let lastSMCOpenAttempt,
+           Date().timeIntervalSince(lastSMCOpenAttempt) < 60 {
+            return false
+        }
+        lastSMCOpenAttempt = Date()
 
-        let matching = IOServiceMatching("AppleSMC")
-        var iterator: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS
-        else { return false }
-        defer { IOObjectRelease(iterator) }
-
-        let service = IOIteratorNext(iterator)
-        guard service != 0 else { return false }
-        defer { IOObjectRelease(service) }
-
-        if IOServiceOpen(service, mach_task_self_, 0, &smcConn) == KERN_SUCCESS {
-            smcOpened = true
+        // Apple Silicon exposes AppleSMCKeysEndpoint; Intel commonly exposes
+        // AppleSMC directly. Try both without repeatedly walking IOKit on failure.
+        for serviceClass in ["AppleSMC", "AppleSMCKeysEndpoint"] {
+            let service = IOServiceGetMatchingService(
+                kIOMainPortDefault,
+                IOServiceMatching(serviceClass))
+            guard service != 0 else {
+                if diagnostics { print("[SMC] \(serviceClass): service not found") }
+                continue
+            }
+            let result = IOServiceOpen(service, mach_task_self_, 0, &smcConn)
+            IOObjectRelease(service)
+            if diagnostics {
+                print(String(
+                    format: "[SMC] %@: IOServiceOpen=0x%08x",
+                    serviceClass, result))
+            }
+            if result == KERN_SUCCESS {
+                smcOpened = true
+                break
+            }
         }
         return smcOpened
     }
@@ -800,13 +816,16 @@ final class SystemMetricsCollector: @unchecked Sendable {
             var dataSize: UInt32 = 0
             var dataType: UInt32 = 0
             var dataAttributes: UInt8 = 0
+            // Swift may reuse a nested struct's tail padding when laying out
+            // the parent. Keep these bytes explicit so result/status/data8
+            // land at the offsets required by the AppleSMC C ABI.
+            var padding: (UInt8, UInt8, UInt8) = (0, 0, 0)
         }
 
         var key: UInt32 = 0
         var vers = vers_t()
         var pLimitData = LimitData_t()
         var keyInfo = keyInfo_t()
-        var padding: UInt16 = 0
         var result: UInt8 = 0
         var status: UInt8 = 0
         var data8: UInt8 = 0
@@ -834,13 +853,22 @@ final class SystemMetricsCollector: @unchecked Sendable {
 
     private func readSMCValue(_ key: String) -> SMCValue? {
         guard smcOpened else { return nil }
+        let diagnostics = CommandLine.arguments.contains("--smc-test")
 
         // Step 1: Get key info
         var ki = SMCKeyData_t()
         var ko = SMCKeyData_t()
         ki.key = fourCC(key)
         ki.data8 = 9  // kSMCGetKeyInfo
-        guard smcCall(&ki, &ko) == KERN_SUCCESS else { return nil }
+        let keyInfoResult = smcCall(&ki, &ko)
+        guard keyInfoResult == KERN_SUCCESS else {
+            if diagnostics {
+                print(String(
+                    format: "[SMC] %@ keyInfo=0x%08x stride=%d",
+                    key, keyInfoResult, MemoryLayout<SMCKeyData_t>.stride))
+            }
+            return nil
+        }
 
         // Step 2: Read value
         var ri = SMCKeyData_t()
@@ -848,12 +876,25 @@ final class SystemMetricsCollector: @unchecked Sendable {
         ri.key = fourCC(key)
         ri.keyInfo.dataSize = ko.keyInfo.dataSize
         ri.data8 = 5  // kSMCReadKey
-        guard smcCall(&ri, &ro) == KERN_SUCCESS else { return nil }
+        let readResult = smcCall(&ri, &ro)
+        guard readResult == KERN_SUCCESS else {
+            if diagnostics {
+                print(String(
+                    format: "[SMC] %@ read=0x%08x size=%d type=0x%08x",
+                    key, readResult, ko.keyInfo.dataSize, ko.keyInfo.dataType))
+            }
+            return nil
+        }
 
         var tuple = ro.bytes
         let size = min(Int(ko.keyInfo.dataSize), 32)
         let bytes = withUnsafeBytes(of: &tuple) { raw in
             Array(raw.prefix(size))
+        }
+        if diagnostics {
+            print(String(
+                format: "[SMC] %@ size=%d type=0x%08x result=%d status=%d",
+                key, size, ko.keyInfo.dataType, ro.result, ro.status))
         }
         return SMCValue(dataType: ko.keyInfo.dataType, bytes: bytes)
     }

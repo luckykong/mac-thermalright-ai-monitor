@@ -183,26 +183,18 @@ enum Draw {
 
     // MARK: - Sparkline (trend graph)
 
-    /// Draw a mirrored bar chart with labels above and below.
-    /// Layout:  [topLabel topValue]
-    ///          [====chart area====]
-    ///          [botLabel botValue]
-    /// Total height = labelH + chartH + labelH
+    /// Draw a mirrored download/upload chart. Current values are repeated inside
+    /// their respective halves so the direction remains obvious at a glance.
     static func mirrorBarChart(
         _ ctx: CGContext,
         topValues: [Double], bottomValues: [Double],
         x: Int, y: Int, w: Int, h: Int,
         topColor: CGColor, bottomColor: CGColor,
-        topLabel: String, bottomLabel: String,
-        topCurrent: String, bottomCurrent: String
+        topCallout: String, bottomCallout: String
     ) {
-        let labelH = 16
-        let chartY = y + labelH + 2
-        let chartH = h - (labelH + 2) * 2
-        guard chartH > 4 else { return }
-
-        let midY = CGFloat(chartY + chartH / 2)
-        let halfH = CGFloat(chartH / 2)
+        guard h > 12 else { return }
+        let midY = CGFloat(y + h / 2)
+        let halfH = CGFloat(h / 2)
         let count = max(topValues.count, bottomValues.count)
         guard count > 0 else { return }
 
@@ -210,10 +202,6 @@ enum Draw {
         let topMax = topValues.max() ?? 1
         let botMax = bottomValues.max() ?? 1
         let maxVal = max(topMax, botMax, 1)
-
-        // Top label line
-        text(ctx, "\(topLabel) \(topCurrent)", x: x, y: y,
-             font: Fonts.system(15), color: topColor)
 
         // Center axis
         ctx.setStrokeColor(Color.border)
@@ -240,9 +228,36 @@ enum Draw {
             ctx.fill(CGRect(x: bx, y: midY, width: max(barW - 1, 1), height: barH))
         }
 
-        // Bottom label line
-        text(ctx, "\(bottomLabel) \(bottomCurrent)", x: x, y: y + h - labelH,
-             font: Fonts.system(15), color: bottomColor)
+        let calloutFont = Fonts.system(12, weight: .semibold)
+        drawChartCallout(
+            ctx, topCallout, x: x + 6, y: y + 7,
+            font: calloutFont, color: topColor)
+        drawChartCallout(
+            ctx, bottomCallout, x: x + 6, y: Int(midY) + 7,
+            font: calloutFont, color: bottomColor)
+    }
+
+    private static func drawChartCallout(
+        _ ctx: CGContext,
+        _ value: String,
+        x: Int,
+        y: Int,
+        font: NSFont,
+        color: CGColor
+    ) {
+        let size = (value as NSString).size(withAttributes: [.font: font])
+        let rectX = CGFloat(x - 4)
+        let rectY = CGFloat(y - 2)
+        let rectWidth = ceil(size.width) + 8
+        let rectHeight = ceil(size.height) + 4
+        let rect = CGRect(
+            x: rectX, y: rectY,
+            width: rectWidth, height: rectHeight)
+        ctx.setFillColor(Color.panelBG.copy(alpha: 0.82) ?? Color.panelBG)
+        ctx.addPath(CGPath(
+            roundedRect: rect, cornerWidth: 5, cornerHeight: 5, transform: nil))
+        ctx.fillPath()
+        text(ctx, value, x: x, y: y, font: font, color: color)
     }
 
     /// Format bytes per second to human-readable string

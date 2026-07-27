@@ -148,8 +148,13 @@ struct DailyScheduleCalculatorTests {
         let first = AppPreferences(defaults: defaults)
         first.brightness = 9
         first.refreshInterval = 2
+        first.performanceMode = .eco
         first.rotateDisplay = true
         first.autoShowPreviewWhenDisconnected = true
+        first.customScriptEnabled = true
+        first.customScriptPath = "/tmp/status card.sh"
+        first.customScriptDisplayName = "STATUS"
+        first.customScriptIntervalSeconds = 45
         first.scheduleEnabled = true
         first.scheduleAction = .quitApp
         first.automaticStartEnabled = false
@@ -159,8 +164,13 @@ struct DailyScheduleCalculatorTests {
         let restored = AppPreferences(defaults: defaults)
         #expect(restored.brightness == 9)
         #expect(restored.refreshInterval == 2)
+        #expect(restored.performanceMode == .eco)
         #expect(restored.rotateDisplay)
         #expect(restored.autoShowPreviewWhenDisconnected)
+        #expect(restored.customScriptEnabled)
+        #expect(restored.customScriptPath == "/tmp/status card.sh")
+        #expect(restored.customScriptDisplayName == "STATUS")
+        #expect(restored.customScriptIntervalSeconds == 45)
         #expect(restored.scheduleEnabled)
         #expect(restored.scheduleAction == .quitApp)
         #expect(!restored.automaticStartEnabled)

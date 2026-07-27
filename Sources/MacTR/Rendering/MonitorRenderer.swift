@@ -1,6 +1,6 @@
 // MonitorRenderer.swift — System telemetry + AI agents dashboard
 //
-// Left: compact CPU/GPU/MEMORY/NETWORK/FANS grid
+// Left: compact CPU/GPU/MEMORY + NETWORK/CUSTOM/CLOCK grid
 // Right: wide, two-column AI AGENTS activity panel
 // The AGENTS panel shows each agent's current activity (top) and today's
 // token usage + quota (bottom), sourced from local session transcripts.
@@ -13,10 +13,12 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
     private let collector = SystemMetricsCollector()
     private let agentCollector = AgentUsageCollector()
+    private let scriptRunner = CustomScriptRunner()
 
     // Background metrics collection — decoupled from frame loop for consistent refresh
     private let metricsQueue = DispatchQueue(label: "com.thermalvision.metrics")
     private var metricsRunning = false
+    private var metricsGeneration: UInt64 = 0
     private let lock = NSLock()
 
     // Cached snapshots (written by metricsQueue, read by render thread)
@@ -30,10 +32,33 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
     private var _sys: SystemSnapshot?
     private var _networkRxHistory: [Double] = []
     private var _networkTxHistory: [Double] = []
-    private let networkHistoryLimit = 60  // 30 seconds at the 0.5s collection cadence
+    private let networkGraphBars = 60
+    private var performanceMode: PerformanceMode = .balanced
+    private var customScriptConfiguration = CustomScriptConfiguration.disabled
 
     // Reusable CGContext — avoids allocating 3.6MB every 0.5s (prevents CG raster data leak)
     private var reusableCtx: CGContext?
+
+    private let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.dateFormat = "EEE · MMM d"
+        return formatter
+    }()
+
+    private let hourMinuteFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    private let secondsFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "ss"
+        return formatter
+    }()
 
     // Test mode (--test-flash): force both columns into the flashing state until
     // this deadline, to preview the alert visuals without waiting for a real event
@@ -55,6 +80,29 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                    needsAttention: true)
     }
 
+    func configure(
+        performanceMode: PerformanceMode,
+        customScript: CustomScriptConfiguration
+    ) {
+        lock.lock()
+        self.performanceMode = performanceMode
+        let scriptChanged = customScript != customScriptConfiguration
+        customScriptConfiguration = customScript
+        let running = metricsRunning
+        lock.unlock()
+        if running, scriptChanged {
+            scriptRunner.update(configuration: customScript)
+        }
+    }
+
+    func runCustomScriptNow() {
+        scriptRunner.runNow()
+    }
+
+    func customScriptSnapshot() -> CustomScriptSnapshot {
+        scriptRunner.currentSnapshot()
+    }
+
     /// Start background metrics collection. Call before first render().
     /// Primes all metrics synchronously, then starts async collection loop.
     /// Safe to call multiple times — returns immediately if already running.
@@ -62,8 +110,12 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         lock.lock()
         guard !metricsRunning else { lock.unlock(); return }
         metricsRunning = true
+        metricsGeneration &+= 1
+        let generation = metricsGeneration
+        let scriptConfiguration = customScriptConfiguration
         lock.unlock()
         log("[Metrics] Starting collection...")
+        scriptRunner.start(configuration: scriptConfiguration)
         // First pass primes all counters; CPU/network deltas will be zero.
         let cpu0 = collector.collectCPU()
         let mem = collector.collectMemory()
@@ -89,55 +141,85 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         lock.unlock()
 
         // Start async collection loop
-        metricsQueue.async { [weak self] in self?.metricsLoop() }
+        metricsQueue.async { [weak self] in
+            self?.metricsLoop(generation: generation)
+        }
     }
 
     func stopMetrics() {
         log("[Metrics] Stopping collection")
+        lock.lock()
         metricsRunning = false
+        metricsGeneration &+= 1
+        lock.unlock()
+        scriptRunner.stop()
     }
 
-    /// True when a column has a live animation (breathing while working, or the
-    /// done/waiting blink) — the frame loop uses this to raise the LCD frame rate
-    /// only while something is actually moving, and idle low otherwise.
-    func wantsHighFrameRate() -> Bool {
-        lock.lock(); defer { lock.unlock() }
+    /// Adaptive interval for the current visual state. A fan keeps a modest
+    /// animation cadence, while active agent/CPU animation gets the selected mode's
+    /// faster cadence. Idle content stays at the mode's low-power interval.
+    func preferredFrameInterval() -> Double {
+        lock.lock()
+        let mode = performanceMode
         // Heavy CPU → Pikachu crackles with electricity, worth animating smoothly
-        if let c = _cpu, c.total > 55 { return true }
-        guard let a = _agents else { return false }
-        return a.claude.isWorking || a.claude.needsAttention
-            || a.codex.isWorking || a.codex.needsAttention
+        let active = (_cpu?.total ?? 0) > 55
+            || (_agents?.claude.isWorking ?? false)
+            || (_agents?.claude.needsAttention ?? false)
+            || (_agents?.codex.isWorking ?? false)
+            || (_agents?.codex.needsAttention ?? false)
+        let hasFan = _fans?.available == true && !(_fans?.fans.isEmpty ?? true)
+        lock.unlock()
+        if active { return 1.0 / mode.activeFramesPerSecond }
+        if hasFan { return 1.0 / mode.fanFramesPerSecond }
+        return mode.idleFrameInterval
     }
 
-    private func metricsLoop() {
+    private func metricsLoop(generation: UInt64) {
         log("[Metrics] Loop started on metricsQueue")
-        var slowTick = 0
-        while metricsRunning {
-            // Fast metrics every tick
-            let cpu = collector.collectCPU()
-            let mem = collector.collectMemory()
-            let network = collector.collectNetwork()
+        var lastSlow = Date.distantPast
+        var lastAgents = Date.distantPast
+        while true {
             lock.lock()
-            _cpu = cpu; _mem = mem; _network = network
-            appendNetworkHistoryLocked(network)
+            let running = metricsRunning && metricsGeneration == generation
+            let mode = performanceMode
             lock.unlock()
+            guard running else { break }
 
-            // Slow metrics every 4th tick (~2s)
-            slowTick += 1
-            if slowTick >= 4 {
-                let gpu = collector.collectGPU()
-                let temp = collector.collectTemperature()
-                let fans = collector.collectFans()
-                let agents = agentCollector.collect()
-                let sys = collector.collectSystem()
+            // This loop is one long-lived GCD work item. Without an explicit pool,
+            // Foundation bridge objects created while scanning JSONL transcripts
+            // never reached the queue's work-item drain and accumulated indefinitely.
+            autoreleasepool {
+                // Fast metrics every tick
+                let cpu = collector.collectCPU()
+                let mem = collector.collectMemory()
+                let network = collector.collectNetwork()
                 lock.lock()
-                _gpu = gpu; _temp = temp; _fans = fans
-                _agents = agents; _sys = sys
+                _cpu = cpu; _mem = mem; _network = network
+                appendNetworkHistoryLocked(network)
                 lock.unlock()
-                slowTick = 0
+
+                let now = Date()
+                if now.timeIntervalSince(lastSlow) >= mode.slowMetricsInterval {
+                    let gpu = collector.collectGPU()
+                    let temp = collector.collectTemperature()
+                    let fans = collector.collectFans()
+                    let sys = collector.collectSystem()
+                    lock.lock()
+                    _gpu = gpu; _temp = temp; _fans = fans
+                    _sys = sys
+                    lock.unlock()
+                    lastSlow = now
+                }
+                if now.timeIntervalSince(lastAgents) >= mode.agentMetricsInterval {
+                    let agents = agentCollector.collect()
+                    lock.lock()
+                    _agents = agents
+                    lock.unlock()
+                    lastAgents = now
+                }
             }
 
-            Thread.sleep(forTimeInterval: 0.5)
+            Thread.sleep(forTimeInterval: mode.fastMetricsInterval)
         }
         log("[Metrics] Loop exited (metricsRunning=false)")
     }
@@ -147,18 +229,23 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         guard network.available else { return }
         _networkRxHistory.append(max(network.rxBytesPerSec, 0))
         _networkTxHistory.append(max(network.txBytesPerSec, 0))
-        if _networkRxHistory.count > networkHistoryLimit {
-            _networkRxHistory.removeFirst(_networkRxHistory.count - networkHistoryLimit)
+        let historyLimit = max(
+            1, Int(ceil(30 / performanceMode.fastMetricsInterval)))
+        if _networkRxHistory.count > historyLimit {
+            _networkRxHistory.removeFirst(_networkRxHistory.count - historyLimit)
         }
-        if _networkTxHistory.count > networkHistoryLimit {
-            _networkTxHistory.removeFirst(_networkTxHistory.count - networkHistoryLimit)
+        if _networkTxHistory.count > historyLimit {
+            _networkTxHistory.removeFirst(_networkTxHistory.count - historyLimit)
         }
     }
 
-    // Demo mode: drive the display with polished fake data (for screenshots / photos
-    // and open-source showcase). Set before render(); the frame loop keeps its normal
+    // Showcase mode drives the display with deterministic sample data for documentation.
+    // Set before render(); the frame loop keeps its normal
     // memory-safe path (reusable context + autoreleasepool) and animations stay live.
     var demoMode = false
+    /// Preserve real system metrics while replacing local project names, messages,
+    /// token totals and quota in a screenshot intended for public documentation.
+    var redactAgentDetails = false
 
     private struct DashboardData {
         let cpu: CPUSnapshot
@@ -169,12 +256,51 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let temp: TemperatureSnapshot
         let sys: SystemSnapshot?
         let agents: AgentsSnapshot
+        let script: CustomScriptSnapshot
         let rxHistory: [Double]
         let txHistory: [Double]
+        let networkSampleInterval: Double
+    }
+
+    private func documentationAgents() -> AgentsSnapshot {
+        AgentsSnapshot(
+            claude: AgentUsage(
+                available: true,
+                todayInputTokens: 8_420_000,
+                todayOutputTokens: 126_000,
+                secondsSinceActive: 180,
+                project: "example-project",
+                activity: "已完成今日任务，等待下一步指令。",
+                needsAttention: false,
+                isWorking: false),
+            codex: AgentUsage(
+                available: true,
+                todayInputTokens: 12_600_000,
+                todayOutputTokens: 284_000,
+                secondsSinceActive: 4,
+                project: "dashboard",
+                activity: "正在验证显示布局、性能与发布包。",
+                quotaUsedPercent: 34,
+                quotaResetsAt: Date().addingTimeInterval(6 * 86400),
+                needsAttention: false,
+                isWorking: true,
+                stepCurrent: 4,
+                stepTotal: 6,
+                stepText: "验证真实 LCD 输出"))
+    }
+
+    private func documentationScript() -> CustomScriptSnapshot {
+        CustomScriptSnapshot(
+            state: .succeeded,
+            title: "BACKUP",
+            output: "STATUS  OK\nREPOS   12\nLAST    19:30\nNEXT    20:00",
+            message: nil,
+            lastRunAt: Date().addingTimeInterval(-30),
+            exitCode: 0)
     }
 
     /// Deterministic showcase data. CPU cores gently wave over time so the demo looks
-    /// alive on the LCD; everything else is fixed so it reads clearly in a photo.
+    /// alive on the LCD; everything else is fixed so documentation stays reproducible.
     private func demoData(coreCount requestedCoreCount: Int = 10) -> DashboardData {
         let tt = Date().timeIntervalSince1970
         let coreCount = max(requestedCoreCount, 1)
@@ -196,7 +322,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             available: true, name: "Apple M4 Pro", cores: 20,
             deviceUtil: 63, rendererUtil: 58, tilerUtil: 41,
             memUsedMB: 2860, memAllocMB: 4096)
-        let historyCount = networkHistoryLimit
+        let historyCount = networkGraphBars
         let rxHistory = (0..<historyCount).map { i -> Double in
             let wave = 0.55 + 0.45 * sin(Double(i) * 0.31 + tt * 0.25)
             return 4_000_000 + 38_000_000 * wave
@@ -212,8 +338,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let fans = FanSnapshot(
             available: true,
             fans: [
-                FanReading(name: "Left", currentRPM: 2_180, minRPM: 1_200, maxRPM: 5_800),
-                FanReading(name: "Right", currentRPM: 2_040, minRPM: 1_200, maxRPM: 5_800),
+                FanReading(name: "System", currentRPM: 2_180, minRPM: 1_200, maxRPM: 5_800),
             ])
         let temp = TemperatureSnapshot(cpuTemp: 52, gpuTemp: 45, thermalState: 0)
         let sys = SystemSnapshot(uptimeSeconds: 27 * 3600 + 3 * 60, processCount: 612)
@@ -250,10 +375,18 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                               isWorking: true,
                               stepCurrent: 4, stepTotal: 6,
                               stepText: "部署到预发环境并跑冒烟测试"))
+        let script = CustomScriptSnapshot(
+            state: .succeeded,
+            title: "BACKUP",
+            output: "STATUS  OK\nREPOS   12\nLAST    19:30\nNEXT    20:00",
+            message: nil,
+            lastRunAt: Date().addingTimeInterval(-30),
+            exitCode: 0)
         return DashboardData(
             cpu: cpu, mem: mem, gpu: gpu, network: network, fans: fans,
-            temp: temp, sys: sys, agents: agents,
-            rxHistory: rxHistory, txHistory: txHistory)
+            temp: temp, sys: sys, agents: agents, script: script,
+            rxHistory: rxHistory, txHistory: txHistory,
+            networkSampleInterval: 0.5)
     }
 
     /// Render one demo frame with the showcase data (for --snapshot).
@@ -289,10 +422,14 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             guard let c = _cpu, let m = _mem, let tp = _temp, let a = _agents else {
                 lock.unlock(); return nil
             }
+            let visibleAgents = redactAgentDetails ? documentationAgents() : a
             data = DashboardData(
                 cpu: c, mem: m, gpu: _gpu, network: _network, fans: _fans,
-                temp: tp, sys: _sys, agents: a,
-                rxHistory: _networkRxHistory, txHistory: _networkTxHistory)
+                temp: tp, sys: _sys, agents: visibleAgents,
+                script: redactAgentDetails
+                    ? documentationScript() : scriptRunner.currentSnapshot(),
+                rxHistory: _networkRxHistory, txHistory: _networkTxHistory,
+                networkSampleInterval: performanceMode.fastMetricsInterval)
             lock.unlock()
         }
 
@@ -304,7 +441,9 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                 agents: AgentsSnapshot(
                     claude: withAttention(data.agents.claude),
                     codex: withAttention(data.agents.codex)),
-                rxHistory: data.rxHistory, txHistory: data.txHistory)
+                script: data.script,
+                rxHistory: data.rxHistory, txHistory: data.txHistory,
+                networkSampleInterval: data.networkSampleInterval)
         }
 
         // Reuse CGContext to prevent CG raster data memory growth
@@ -343,9 +482,10 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         renderMemory(ctx, mem: data.mem)
         renderNetwork(
             ctx, network: data.network,
-            rxHistory: data.rxHistory, txHistory: data.txHistory)
-        renderFansAndSystem(
-            ctx, fans: data.fans, sys: data.sys, agentsBusy: agentsBusy)
+            rxHistory: data.rxHistory, txHistory: data.txHistory,
+            sampleInterval: data.networkSampleInterval)
+        renderCustomScript(ctx, snapshot: data.script)
+        renderClockAndFan(ctx, fans: data.fans, sys: data.sys, agentsBusy: agentsBusy)
         renderAgents(ctx, agents: data.agents)
     }
 
@@ -353,10 +493,10 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
     private func renderCPU(_ ctx: CGContext, cpu: CPUSnapshot, temp: TemperatureSnapshot,
                            agentsBusy: Bool) {
-        let x = Layout.systemCardX(0)
-        let y = Layout.systemCardY(0)
-        let w = Layout.systemColumnWidth
-        let h = Layout.systemRowHeight
+        let x = Layout.systemTopX(0)
+        let y = Layout.panelY
+        let w = Layout.systemTopColumnWidth
+        let h = Layout.systemTopHeight
 
         Draw.panel(ctx, x: x, y: y, w: w, h: h, accent: Color.blue)
         Draw.text(ctx, "CPU", x: x + 14, y: y + 11,
@@ -404,10 +544,10 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
     private func renderGPU(_ ctx: CGContext, gpu: GPUSnapshot?,
                            temp: TemperatureSnapshot) {
-        let x = Layout.systemCardX(1)
-        let y = Layout.systemCardY(0)
-        let w = Layout.systemColumnWidth
-        let h = Layout.systemRowHeight
+        let x = Layout.systemTopX(1)
+        let y = Layout.panelY
+        let w = Layout.systemTopColumnWidth
+        let h = Layout.systemTopHeight
 
         Draw.panel(ctx, x: x, y: y, w: w, h: h, accent: Color.magenta)
         Draw.text(ctx, "GPU", x: x + 14, y: y + 11,
@@ -456,10 +596,10 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
     }
 
     private func renderMemory(_ ctx: CGContext, mem: MemorySnapshot) {
-        let x = Layout.systemCardX(0)
-        let y = Layout.systemCardY(1)
-        let w = Layout.systemColumnWidth
-        let h = Layout.systemRowHeight
+        let x = Layout.systemTopX(2)
+        let y = Layout.panelY
+        let w = Layout.systemTopColumnWidth
+        let h = Layout.systemTopHeight
         let bytesPerGB = 1024.0 * 1024 * 1024
         let totalGB = Double(mem.total) / bytesPerGB
         let usedGB = Double(mem.total > mem.available ? mem.total - mem.available : 0) / bytesPerGB
@@ -500,12 +640,17 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             x: x + 14, y: y + h - 27, w: w - 28, h: 10)
     }
 
-    private func renderNetwork(_ ctx: CGContext, network: NetworkSnapshot?,
-                               rxHistory: [Double], txHistory: [Double]) {
-        let x = Layout.systemCardX(1)
-        let y = Layout.systemCardY(1)
-        let w = Layout.systemColumnWidth
-        let h = Layout.systemRowHeight
+    private func renderNetwork(
+        _ ctx: CGContext,
+        network: NetworkSnapshot?,
+        rxHistory: [Double],
+        txHistory: [Double],
+        sampleInterval: Double
+    ) {
+        let x = Layout.networkX
+        let y = Layout.systemBottomY
+        let w = Layout.networkWidth
+        let h = Layout.systemBottomHeight
 
         Draw.panel(ctx, x: x, y: y, w: w, h: h, accent: Color.cyan)
         Draw.text(ctx, "NETWORK", x: x + 14, y: y + 11,
@@ -514,110 +659,273 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                   font: Fonts.system(10, weight: .semibold), color: Color.textD)
 
         guard let network, network.available else {
-            Draw.centeredText(ctx, "N/A", cx: x + w / 2, y: y + 61,
+            Draw.centeredText(ctx, "N/A", cx: x + w / 2, y: y + 116,
                               font: Fonts.system(25, weight: .semibold), color: Color.textD)
             return
         }
 
+        let down = "DOWN \(Draw.formatBytesPerSec(network.rxBytesPerSec))"
+        let up = "UP \(Draw.formatBytesPerSec(network.txBytesPerSec))"
+        let rateFont = Fonts.system(14, weight: .semibold)
+        Draw.text(ctx, down, x: x + 14, y: y + 43,
+                  font: rateFont, color: Color.green)
+        let upWidth = (up as NSString).size(withAttributes: [.font: rateFont]).width
+        Draw.text(ctx, up, x: Int(CGFloat(x + w - 14) - upWidth), y: y + 43,
+                  font: rateFont, color: Color.cyan)
+
         // Pad startup history on the left so bar width stays stable instead of
         // rendering a handful of oversized columns during the first 30 seconds.
-        let rxValues = paddedNetworkHistory(rxHistory)
-        let txValues = paddedNetworkHistory(txHistory)
+        let rxValues = paddedNetworkHistory(rxHistory, sampleInterval: sampleInterval)
+        let txValues = paddedNetworkHistory(txHistory, sampleInterval: sampleInterval)
         Draw.mirrorBarChart(
             ctx,
             topValues: rxValues, bottomValues: txValues,
-            x: x + 14, y: y + 38, w: w - 28, h: h - 49,
+            x: x + 14, y: y + 72, w: w - 28, h: h - 88,
             topColor: Color.green, bottomColor: Color.cyan,
-            topLabel: "DOWN", bottomLabel: "UP",
-            topCurrent: Draw.formatBytesPerSec(network.rxBytesPerSec),
-            bottomCurrent: Draw.formatBytesPerSec(network.txBytesPerSec))
+            topCallout: "↓ \(Draw.formatBytesPerSec(network.rxBytesPerSec))",
+            bottomCallout: "↑ \(Draw.formatBytesPerSec(network.txBytesPerSec))")
     }
 
-    private func paddedNetworkHistory(_ values: [Double]) -> [Double] {
-        let recent = Array(values.suffix(networkHistoryLimit))
-        guard recent.count < networkHistoryLimit else { return recent }
-        return Array(repeating: 0, count: networkHistoryLimit - recent.count) + recent
+    private func paddedNetworkHistory(
+        _ values: [Double],
+        sampleInterval: Double
+    ) -> [Double] {
+        let expectedSamples = max(1, Int(ceil(30 / max(sampleInterval, 0.1))))
+        let recent = Array(values.suffix(expectedSamples))
+        let padded = Array(repeating: 0, count: max(expectedSamples - recent.count, 0))
+            + recent
+        guard padded.count != networkGraphBars else { return padded }
+
+        // Resample the mode-dependent 30-second history to a stable 60 bars.
+        return (0..<networkGraphBars).map { index in
+            let source = min(
+                Int(Double(index) / Double(networkGraphBars) * Double(padded.count)),
+                padded.count - 1)
+            return padded[source]
+        }
     }
 
-    private func renderFansAndSystem(_ ctx: CGContext, fans: FanSnapshot?,
-                                     sys: SystemSnapshot?, agentsBusy: Bool) {
-        let x = Layout.systemX
-        let y = Layout.systemCardY(2)
-        let w = Layout.systemWidth
-        let h = Layout.systemRowHeight
-        let dividerX = x + 377
+    private func renderCustomScript(
+        _ ctx: CGContext,
+        snapshot: CustomScriptSnapshot
+    ) {
+        let x = Layout.scriptX
+        let y = Layout.systemBottomY
+        let w = Layout.scriptWidth
+        let h = Layout.systemBottomHeight
+        let accent = Color.purple
 
-        Draw.panel(ctx, x: x, y: y, w: w, h: h, accent: Color.orange)
-        Draw.text(ctx, "FANS", x: x + 14, y: y + 11,
-                  font: Fonts.system(18, weight: .bold), color: Color.orange)
-        Draw.line(
-            ctx, from: CGPoint(x: dividerX, y: y + 15),
-            to: CGPoint(x: dividerX, y: y + h - 15), color: Color.border)
+        Draw.panel(ctx, x: x, y: y, w: w, h: h, accent: accent)
+        let title = truncate(
+            snapshot.title.uppercased(),
+            font: Fonts.system(18, weight: .bold),
+            maxW: CGFloat(w - 98))
+        Draw.text(ctx, title, x: x + 14, y: y + 11,
+                  font: Fonts.system(18, weight: .bold), color: accent)
 
-        if let fans, fans.available {
-            if fans.fans.isEmpty {
-                Draw.text(ctx, "FANLESS", x: x + 14, y: y + 61,
-                          font: Fonts.system(24, weight: .semibold), color: Color.textD)
-                Draw.text(ctx, "Passive cooling", x: x + 14, y: y + 90,
-                          font: Fonts.system(12), color: Color.textL)
-            } else {
-                let shown = fans.displayReadings()
-                let overflow = fans.overflowCount()
-                if overflow > 0 {
-                    Draw.text(ctx, "+\(overflow)",
-                              x: dividerX - 38, y: y + 15,
-                              font: Fonts.system(11, weight: .bold), color: Color.textL)
-                }
-                for (index, fan) in shown.enumerated() {
-                    let rowY = y + 42 + index * 31
-                    let name = truncate(
-                        fan.name, font: Fonts.system(12, weight: .medium), maxW: 72)
-                    Draw.text(ctx, name, x: x + 14, y: rowY,
-                              font: Fonts.system(12, weight: .medium), color: Color.textS)
-                    Draw.text(ctx, String(format: "%.0f", fan.currentRPM),
-                              x: x + 91, y: rowY,
-                              font: Fonts.mono(12), color: Color.textW)
-                    Draw.text(ctx, "RPM", x: x + 131, y: rowY + 1,
-                              font: Fonts.system(9, weight: .medium), color: Color.textL)
-                    if let percent = fan.percentOfMax {
-                        Draw.bar(
-                            ctx, x: x + 164, y: rowY + 4,
-                            w: dividerX - (x + 164) - 16, h: 8,
-                            percent: percent, color: Color.forPercent(percent))
-                    }
-                }
-            }
-        } else {
-            Draw.text(ctx, "N/A", x: x + 14, y: y + 61,
-                      font: Fonts.system(24, weight: .semibold), color: Color.textD)
-            Draw.text(ctx, "AppleSMC unavailable", x: x + 14, y: y + 90,
-                      font: Fonts.system(12), color: Color.textL)
+        let stateText: String
+        let stateColor: CGColor
+        switch snapshot.state {
+        case .succeeded:
+            stateText = "OK"; stateColor = Color.green
+        case .running:
+            stateText = "RUN"; stateColor = Color.cyan
+        case .failed, .timedOut, .missing, .invalid:
+            stateText = "ERROR"; stateColor = Color.red
+        case .ready:
+            stateText = "READY"; stateColor = Color.textS
+        case .disabled:
+            stateText = "OFF"; stateColor = Color.textD
+        case .unconfigured:
+            stateText = "SETUP"; stateColor = Color.orange
+        }
+        let stateFont = Fonts.system(11, weight: .bold)
+        let stateWidth = (stateText as NSString)
+            .size(withAttributes: [.font: stateFont]).width
+        let dotX = CGFloat(x + w - 18) - stateWidth - 9
+        ctx.setFillColor(stateColor)
+        ctx.fillEllipse(in: CGRect(x: dotX, y: CGFloat(y + 18), width: 6, height: 6))
+        Draw.text(ctx, stateText, x: Int(dotX + 10), y: y + 13,
+                  font: stateFont, color: stateColor)
+
+        if snapshot.state == .disabled || snapshot.state == .unconfigured {
+            let primary = snapshot.state == .disabled ? "SCRIPT OFF" : "ADD SCRIPT"
+            Draw.centeredText(ctx, primary, cx: x + w / 2, y: y + 104,
+                              font: Fonts.system(25, weight: .semibold),
+                              color: snapshot.state == .disabled ? Color.textD : Color.orange)
+            Draw.centeredText(
+                ctx,
+                snapshot.state == .disabled
+                    ? "Enable in Settings" : "Settings › Custom Card",
+                cx: x + w / 2, y: y + 139,
+                font: Fonts.system(13, weight: .medium), color: Color.textL)
+            return
         }
 
-        let statusX = dividerX + 15
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US")
-        formatter.dateFormat = "yyyy-MM-dd  EEE"
-        Draw.text(ctx, formatter.string(from: Date()), x: statusX, y: y + 13,
-                  font: Fonts.system(13, weight: .semibold), color: Color.textS)
-        formatter.dateFormat = "HH:mm:ss"
-        Draw.text(ctx, formatter.string(from: Date()), x: statusX, y: y + 35,
-                  font: Fonts.system(33, weight: .medium), color: Color.textW)
+        var bodyY = y + 50
+        if let message = snapshot.message,
+           [.failed, .timedOut, .missing, .invalid].contains(snapshot.state)
+        {
+            Draw.text(
+                ctx,
+                truncate(message, font: Fonts.system(12, weight: .semibold),
+                         maxW: CGFloat(w - 28)),
+                x: x + 14, y: bodyY,
+                font: Fonts.system(12, weight: .semibold), color: Color.red)
+            bodyY += 23
+        }
+
+        let output = snapshot.output.isEmpty
+            ? (snapshot.state == .running ? "Running…" : "(no output)")
+            : snapshot.output
+        let outputFont = Fonts.mono(15)
+        let lineHeight = 21
+        let maxLines = max((y + h - 37 - bodyY) / lineHeight, 1)
+        var lines: [String] = []
+        for rawLine in output.components(separatedBy: "\n") {
+            lines.append(contentsOf: wrap(
+                rawLine, font: outputFont, maxW: CGFloat(w - 28),
+                maxLines: max(maxLines - lines.count, 1)))
+            if lines.count >= maxLines { break }
+        }
+        for (index, line) in lines.prefix(maxLines).enumerated() {
+            Draw.text(ctx, line, x: x + 14, y: bodyY + index * lineHeight,
+                      font: outputFont, color: Color.textS)
+        }
+
+        if let lastRunAt = snapshot.lastRunAt {
+            let age = max(0, Int(Date().timeIntervalSince(lastRunAt)))
+            let ageText = age < 60 ? "\(age)s ago"
+                : (age < 3600 ? "\(age / 60)m ago" : "\(age / 3600)h ago")
+            Draw.text(ctx, "LAST \(ageText)", x: x + 14, y: y + h - 27,
+                      font: Fonts.system(10, weight: .semibold), color: Color.textD)
+        }
+    }
+
+    private func renderClockAndFan(
+        _ ctx: CGContext,
+        fans: FanSnapshot?,
+        sys: SystemSnapshot?,
+        agentsBusy: Bool
+    ) {
+        let x = Layout.clockX
+        let y = Layout.systemBottomY
+        let w = Layout.clockWidth
+        let h = Layout.systemBottomHeight
+
+        Draw.panel(ctx, x: x, y: y, w: w, h: h, accent: Color.orange)
+        let now = Date()
+        Draw.centeredText(
+            ctx, dateFormatter.string(from: now).uppercased(),
+            cx: x + w / 2, y: y + 15,
+            font: Fonts.system(12, weight: .semibold), color: Color.textS)
+
+        let hm = hourMinuteFormatter.string(from: now)
+        let seconds = ":" + secondsFormatter.string(from: now)
+        let hmFont = Fonts.mono(43)
+        let secondsFont = Fonts.mono(18)
+        let hmWidth = (hm as NSString).size(withAttributes: [.font: hmFont]).width
+        let secondsWidth = (seconds as NSString)
+            .size(withAttributes: [.font: secondsFont]).width
+        let combinedX = CGFloat(x) + (CGFloat(w) - hmWidth - secondsWidth) / 2
+        Draw.text(ctx, hm, x: Int(combinedX), y: y + 42,
+                  font: hmFont, color: Color.textW)
+        Draw.text(ctx, seconds, x: Int(combinedX + hmWidth), y: y + 65,
+                  font: secondsFont, color: Color.textS)
 
         if let sys {
             let hours = sys.uptimeSeconds / 3600
             let minutes = (sys.uptimeSeconds % 3600) / 60
-            let uptime = hours >= 24 ? "\(hours / 24)d \(hours % 24)h" : "\(hours)h \(minutes)m"
-            Draw.text(ctx, "UP \(uptime)", x: statusX, y: y + 91,
-                      font: Fonts.system(11, weight: .medium), color: Color.textL)
-            Draw.text(ctx, "\(sys.processCount) PROCS", x: statusX, y: y + 110,
-                      font: Fonts.system(11, weight: .medium), color: Color.textL)
+            let uptime = hours >= 24
+                ? "\(hours / 24)d \(hours % 24)h" : "\(hours)h \(minutes)m"
+            Draw.centeredText(ctx, "UP \(uptime) · \(sys.processCount) PROCS",
+                              cx: x + w / 2, y: y + 108,
+                              font: Fonts.system(10, weight: .medium),
+                              color: Color.textL)
         }
 
-        let t = Date().timeIntervalSince1970
+        let fanLabel: String
+        let fanColor: CGColor
+        let fanTurnsPerSecond: Double
+        if let fans, fans.available {
+            if fans.fans.isEmpty {
+                fanLabel = "FANLESS"
+                fanColor = Color.textD
+                fanTurnsPerSecond = 0
+            } else {
+                let fan = fans.fans[0]
+                fanLabel = String(format: "%.0f RPM", fan.currentRPM)
+                    + (fans.fans.count > 1 ? " ×\(fans.fans.count)" : "")
+                fanColor = Color.forPercent(fan.percentOfMax ?? min(fan.currentRPM / 60, 100))
+                let normalized = fan.percentOfMax.map { $0 / 100 }
+                    ?? min(max(fan.currentRPM / 6_000, 0), 1)
+                fanTurnsPerSecond = 0.18 + normalized * 1.45
+            }
+        } else {
+            fanLabel = "FAN N/A"
+            fanColor = Color.textD
+            fanTurnsPerSecond = 0
+        }
+        Draw.centeredText(ctx, fanLabel, cx: x + w / 2, y: y + 142,
+                          font: Fonts.system(12, weight: .semibold), color: fanColor)
+
+        let t = now.timeIntervalSince1970
+        let catScale: CGFloat = 0.54
         drawBongoCat(
-            ctx, cx: x + w - 43, baseY: y + h - 12,
-            tapping: agentsBusy, phase: Int(t * 5) % 2 == 0, scale: 0.42)
+            ctx, cx: x + w / 2, baseY: y + h - 12,
+            tapping: agentsBusy, phase: Int(t * 5) % 2 == 0, scale: catScale)
+        drawFanRotor(
+            ctx,
+            center: CGPoint(x: x + w / 2 + 1, y: y + h - 62),
+            radius: 13,
+            angle: CGFloat(t * fanTurnsPerSecond * 2 * .pi),
+            color: fanColor,
+            available: fans?.available == true)
+    }
+
+    private func drawFanRotor(
+        _ ctx: CGContext,
+        center: CGPoint,
+        radius: CGFloat,
+        angle: CGFloat,
+        color: CGColor,
+        available: Bool
+    ) {
+        ctx.saveGState()
+        ctx.translateBy(x: center.x, y: center.y)
+        ctx.rotate(by: angle)
+        ctx.setFillColor(color.copy(alpha: 0.88) ?? color)
+        for index in 0..<4 {
+            ctx.saveGState()
+            ctx.rotate(by: CGFloat(index) * .pi / 2)
+            let blade = CGMutablePath()
+            blade.move(to: CGPoint(x: 2, y: -2))
+            blade.addCurve(
+                to: CGPoint(x: radius, y: -1),
+                control1: CGPoint(x: radius * 0.42, y: -radius * 0.62),
+                control2: CGPoint(x: radius * 0.96, y: -radius * 0.48))
+            blade.addCurve(
+                to: CGPoint(x: 2, y: 2),
+                control1: CGPoint(x: radius * 0.86, y: radius * 0.25),
+                control2: CGPoint(x: radius * 0.30, y: radius * 0.30))
+            blade.closeSubpath()
+            ctx.addPath(blade)
+            ctx.fillPath()
+            ctx.restoreGState()
+        }
+        ctx.setFillColor(Color.panelBG)
+        ctx.fillEllipse(in: CGRect(x: -3, y: -3, width: 6, height: 6))
+        ctx.setStrokeColor(color)
+        ctx.setLineWidth(1.4)
+        ctx.strokeEllipse(in: CGRect(
+            x: -radius - 2, y: -radius - 2,
+            width: (radius + 2) * 2, height: (radius + 2) * 2))
+        if !available {
+            ctx.move(to: CGPoint(x: -radius, y: radius))
+            ctx.addLine(to: CGPoint(x: radius, y: -radius))
+            ctx.strokePath()
+        }
+        ctx.restoreGState()
     }
 
     private func drawCompactGauge(_ ctx: CGContext, cx: Int, cy: Int,
@@ -819,7 +1127,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
         Draw.panel(ctx, x: x, y: py, w: pw, h: ph, accent: Color.purple)
         Draw.text(ctx, "AI AGENTS", x: x + 20, y: py + 14,
-                  font: Fonts.system(24, weight: .bold), color: Color.purple)
+                  font: Fonts.system(22, weight: .bold), color: Color.purple)
 
         // Vertical divider between columns
         let midX = x + pw / 2
@@ -878,7 +1186,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
         // Header: name + activity indicator (right-aligned "● now" / "12m ago")
         Draw.text(ctx, name, x: x, y: py + 50,
-                  font: Fonts.system(24, weight: .bold), color: accent)
+                  font: Fonts.system(22, weight: .bold), color: accent)
         let active = (usage.secondsSinceActive ?? Int.max) < 90
         let agoStr: String
         if !usage.available {
@@ -890,7 +1198,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         } else {
             agoStr = "no session"
         }
-        let agoFont = Fonts.system(17, weight: .medium)
+        let agoFont = Fonts.system(15, weight: .medium)
         let agoColor = active ? Color.green : Color.textD
         let agoW = (agoStr as NSString).size(withAttributes: [.font: agoFont]).width
         Draw.text(ctx, agoStr, x: Int(CGFloat(x + w) - agoW), y: py + 56,
@@ -908,16 +1216,16 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             var projMaxW = CGFloat(w)
             if let cur = usage.stepCurrent, let total = usage.stepTotal {
                 let badge = "步骤 \(cur)/\(total)"
-                let bFont = Fonts.system(18, weight: .semibold)
+                let bFont = Fonts.system(16, weight: .semibold)
                 let bW = (badge as NSString).size(withAttributes: [.font: bFont]).width
                 Draw.text(ctx, badge, x: Int(CGFloat(x + w) - bW), y: y + 4,
                           font: bFont, color: accent)
                 projMaxW = CGFloat(w) - bW - 16
             }
-            Draw.text(ctx, truncate(project, font: Fonts.system(26, weight: .semibold),
+            Draw.text(ctx, truncate(project, font: Fonts.system(22, weight: .semibold),
                                     maxW: projMaxW),
-                      x: x, y: y, font: Fonts.system(26, weight: .semibold), color: Color.textW)
-            y += 38
+                      x: x, y: y, font: Fonts.system(22, weight: .semibold), color: Color.textW)
+            y += 34
         }
 
         // Plan progress — compact segmented bar (the badge conveys N/M; no text line,
@@ -938,12 +1246,12 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         Draw.line(ctx, from: CGPoint(x: x, y: tokY - 12),
                   to: CGPoint(x: x + w, y: tokY - 12), color: Color.border)
         Draw.text(ctx, "今日 Token", x: x, y: tokY,
-                  font: Fonts.system(19), color: Color.textL)
+                  font: Fonts.system(17), color: Color.textL)
         Draw.text(ctx, formatTokensCN(usage.todayTotalTokens), x: x, y: tokY + 24,
-                  font: Fonts.system(46, weight: .bold), color: Color.textW)
+                  font: Fonts.system(40, weight: .bold), color: Color.textW)
 
         // In / Out — right-aligned, level with the label + big number
-        let ioFont = Fonts.system(20, weight: .medium)
+        let ioFont = Fonts.system(18, weight: .medium)
         let ioRows: [(String, UInt64)] = [
             ("In", usage.todayInputTokens),
             ("Out", usage.todayOutputTokens),
@@ -966,12 +1274,12 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                 : (remaining > 20 ? Color.orange : Color.red)
             let qy = tokY + 78
             Draw.text(ctx, String(format: "剩余额度 %.0f%%", remaining), x: x, y: qy,
-                      font: Fonts.system(21, weight: .medium), color: qColor)
+                      font: Fonts.system(18, weight: .medium), color: qColor)
             if let resets = usage.quotaResetsAt {
                 let secs = max(0, Int(resets.timeIntervalSinceNow))
                 let resetStr = secs >= 86400 ? "\(secs / 86400)天后重置"
                     : (secs >= 3600 ? "\(secs / 3600)小时后重置" : "\(max(secs / 60, 1))分钟后重置")
-                let rFont = Fonts.system(17)
+                let rFont = Fonts.system(15)
                 let rW = (resetStr as NSString).size(withAttributes: [.font: rFont]).width
                 Draw.text(ctx, resetStr, x: Int(CGFloat(x + w) - rW), y: qy + 3,
                           font: rFont, color: Color.textD)
@@ -1025,8 +1333,8 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
     /// aligned grids, `- ` bullets and prose wrap. Stops when vertical space runs out.
     private func renderMessage(_ ctx: CGContext, text: String, x: Int, y: Int, w: Int,
                                bottom: Int, accent: CGColor) {
-        let proseFont = Fonts.system(19)
-        let lineH = 26
+        let proseFont = Fonts.system(17)
+        let lineH = 24
         var cy = y
         let raw = text.components(separatedBy: "\n")
         var i = 0

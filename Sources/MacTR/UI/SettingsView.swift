@@ -3,10 +3,19 @@
 import AppKit
 import SwiftUI
 
+enum SettingsTab: Hashable {
+    case general
+    case display
+    case customCard
+    case device
+    case about
+}
+
 struct SettingsView: View {
     @Bindable var state: AppState
     @Bindable var preferences: AppPreferences
     @Bindable var launchAtLogin: LaunchAtLoginController
+    @State private var selectedTab: SettingsTab
     let pauseDisplay: () -> Void
     let resumeDisplay: () -> Void
 
@@ -14,34 +23,40 @@ struct SettingsView: View {
         state: AppState,
         launchAtLogin: LaunchAtLoginController,
         pauseDisplay: @escaping () -> Void,
-        resumeDisplay: @escaping () -> Void
+        resumeDisplay: @escaping () -> Void,
+        initialTab: SettingsTab = .general
     ) {
         self.state = state
         preferences = state.preferences
         self.launchAtLogin = launchAtLogin
+        _selectedTab = State(initialValue: initialTab)
         self.pauseDisplay = pauseDisplay
         self.resumeDisplay = resumeDisplay
     }
 
     var body: some View {
-        TabView {
-            Tab("General", systemImage: "gearshape") {
+        TabView(selection: $selectedTab) {
+            Tab("General", systemImage: "gearshape", value: SettingsTab.general) {
                 generalSettings
             }
 
-            Tab("Display", systemImage: "display") {
+            Tab("Display", systemImage: "display", value: SettingsTab.display) {
                 displaySettings
             }
 
-            Tab("Device", systemImage: "cable.connector") {
+            Tab("Custom Card", systemImage: "terminal", value: SettingsTab.customCard) {
+                customCardSettings
+            }
+
+            Tab("Device", systemImage: "cable.connector", value: SettingsTab.device) {
                 deviceSettings
             }
 
-            Tab("About", systemImage: "info.circle") {
+            Tab("About", systemImage: "info.circle", value: SettingsTab.about) {
                 aboutView
             }
         }
-        .frame(width: 560, height: 620)
+        .frame(width: 580, height: 760)
     }
 
     // MARK: - General
@@ -125,16 +140,19 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Refresh") {
-                Picker("Idle interval", selection: $preferences.refreshInterval) {
-                    Text("0.5s (default)").tag(0.5)
-                    Text("1.0s").tag(1.0)
-                    Text("2.0s").tag(2.0)
+            Section("Performance") {
+                Picker("Mode", selection: $preferences.performanceMode) {
+                    ForEach(PerformanceMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
                 }
-                .onChange(of: preferences.refreshInterval) {
+                .onChange(of: preferences.performanceMode) {
                     state.applySettings()
                 }
-                Text("Animations temporarily use a higher adaptive frame rate.")
+                Text(preferences.performanceMode.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Balanced lowers animation and metric cadence without removing any dashboard data.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -181,6 +199,117 @@ struct SettingsView: View {
                         state.applySettings()
                     }
                 Text("Enable if the physical display appears upside down.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    // MARK: - Custom Card
+
+    private var customCardSettings: some View {
+        Form {
+            Section("Custom Script Card") {
+                Toggle("Show custom script output", isOn: $preferences.customScriptEnabled)
+                    .onChange(of: preferences.customScriptEnabled) {
+                        state.applySettings()
+                    }
+
+                LabeledContent("Script") {
+                    HStack {
+                        Text(preferences.customScriptPath.isEmpty
+                             ? "Not selected"
+                             : preferences.customScriptPath)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(
+                                preferences.customScriptPath.isEmpty
+                                    ? .secondary : .primary)
+                            .frame(maxWidth: 300, alignment: .trailing)
+                        Button("Choose…") {
+                            chooseCustomScript()
+                        }
+                    }
+                }
+
+                if !preferences.customScriptPath.isEmpty {
+                    Button("Clear Script", role: .destructive) {
+                        preferences.customScriptPath = ""
+                        state.applySettings()
+                    }
+                }
+
+                TextField("Card name", text: $preferences.customScriptDisplayName)
+                    .onChange(of: preferences.customScriptDisplayName) {
+                        state.applySettings()
+                    }
+
+                HStack {
+                    Text("Run every")
+                    Spacer()
+                    TextField(
+                        "",
+                        value: $preferences.customScriptIntervalSeconds,
+                        format: .number)
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 90)
+                        .onSubmit {
+                            state.applySettings()
+                        }
+                    Text("seconds")
+                        .foregroundStyle(.secondary)
+                }
+                Text("Allowed range: 5 seconds to 24 hours. Runs never overlap and time out automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Test & Status") {
+                LabeledContent("State") {
+                    HStack {
+                        Circle()
+                            .fill(scriptStatusColor)
+                            .frame(width: 8, height: 8)
+                        Text(scriptStatusText)
+                    }
+                }
+
+                Button("Run Now") {
+                    state.applySettings()
+                    state.runCustomScriptNow()
+                }
+                .disabled(
+                    !preferences.customScriptEnabled
+                        || preferences.customScriptPath.isEmpty)
+
+                if !state.customScriptSnapshot.output.isEmpty {
+                    ScrollView {
+                        Text(state.customScriptSnapshot.output)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(minHeight: 90, maxHeight: 150)
+                }
+
+                if let message = state.customScriptSnapshot.message {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(
+                            state.customScriptSnapshot.state == .running
+                                ? SwiftUI.Color(nsColor: .secondaryLabelColor)
+                                : SwiftUI.Color.red)
+                }
+            }
+
+            Section("Execution Rules") {
+                Text("Shell files (.sh, .zsh and .command) run with the system /bin/zsh. Other files must be executable and include a valid shebang. MacTR passes the selected path directly and never evaluates a command string.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("The script runs as the current user without administrator privileges. stdout and stderr are capped at 8 KB; ANSI control sequences are removed.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -344,11 +473,11 @@ struct SettingsView: View {
     }
 
     private var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.0"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.1"
     }
 
     private var appBuild: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "140"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "141"
     }
 
     private func openLoginItemsSettings() {
@@ -356,6 +485,47 @@ struct SettingsView: View {
             string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
         else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    private var scriptStatusText: String {
+        switch state.customScriptSnapshot.state {
+        case .disabled: "Disabled"
+        case .unconfigured: "Choose a script"
+        case .ready: "Ready"
+        case .running: "Running"
+        case .succeeded: "Last run succeeded"
+        case .failed: "Last run failed"
+        case .timedOut: "Timed out"
+        case .missing: "File not found"
+        case .invalid: "Invalid script"
+        }
+    }
+
+    private var scriptStatusColor: SwiftUI.Color {
+        switch state.customScriptSnapshot.state {
+        case .succeeded: .green
+        case .running: .cyan
+        case .failed, .timedOut, .missing, .invalid: .red
+        case .unconfigured: .orange
+        case .disabled, .ready: SwiftUI.Color(nsColor: .secondaryLabelColor)
+        }
+    }
+
+    private func chooseCustomScript() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a Script for the Custom Card"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.treatsFilePackagesAsDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        preferences.customScriptPath = url.path
+        if preferences.customScriptDisplayName.isEmpty {
+            preferences.customScriptDisplayName =
+                url.deletingPathExtension().lastPathComponent
+        }
+        state.applySettings()
     }
 }
 
@@ -416,113 +586,5 @@ struct ScheduleTimeEditorView: View {
                     preferences.closeMinutes = value
                 }
             })
-    }
-}
-
-/// Deterministic documentation rendering of the controls exposed by the
-/// native NSStatusItem menu. The production app continues to use NSMenu.
-struct MenuDocumentationView: View {
-    var body: some View {
-        ZStack {
-            SwiftUI.Color(nsColor: .windowBackgroundColor)
-
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("MacTR v1.4.0")
-                            .font(.headline)
-                        Text("Next: Pause today at 23:00")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "display")
-                        .font(.title2)
-                        .foregroundStyle(.cyan)
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 15)
-
-                Divider()
-                menuRow("Active · 1920×480", icon: "circle.fill", color: .green)
-                Divider().padding(.horizontal, 12)
-                menuRow("Pause Display Output", icon: "pause.circle")
-                menuRow("Preview Window", icon: "rectangle.on.rectangle")
-
-                Divider().padding(.horizontal, 12)
-                menuRow("Launch at Login", icon: "power", trailing: "✓")
-
-                VStack(alignment: .leading, spacing: 9) {
-                    Label("Daily Schedule", systemImage: "clock")
-                        .font(.headline)
-
-                    scheduleRow("Enabled", value: "✓")
-                    scheduleRow("At close time", value: "Pause output")
-                    scheduleRow("Resume automatically", value: "✓")
-                    scheduleRow("Resume", value: "08:00")
-                    scheduleRow("Close", value: "23:00")
-
-                    HStack {
-                        Image(systemName: "slider.horizontal.3")
-                        Text("Edit Times…")
-                    }
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.cyan)
-                    .padding(.top, 3)
-                }
-                .padding(14)
-                .background(
-                    SwiftUI.Color(nsColor: .controlBackgroundColor),
-                    in: RoundedRectangle(cornerRadius: 12))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-
-                menuRow("Settings…", icon: "gearshape")
-                Divider().padding(.horizontal, 12)
-                menuRow("View Latest Release…", icon: "arrow.down.circle")
-                menuRow("About MacTR", icon: "info.circle")
-                Divider().padding(.horizontal, 12)
-                menuRow("Quit MacTR", icon: "xmark.circle")
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(SwiftUI.Color.white.opacity(0.12), lineWidth: 1))
-        .padding(8)
-    }
-
-    private func menuRow(
-        _ title: String,
-        icon: String,
-        color: SwiftUI.Color = .primary,
-        trailing: String? = nil
-    ) -> some View {
-        HStack(spacing: 11) {
-            Image(systemName: icon)
-                .frame(width: 20)
-                .foregroundStyle(color)
-            Text(title)
-            Spacer()
-            if let trailing {
-                Text(trailing)
-                    .foregroundStyle(.cyan)
-                    .fontWeight(.semibold)
-            }
-        }
-        .font(.callout)
-        .padding(.horizontal, 18)
-        .frame(height: 38)
-    }
-
-    private func scheduleRow(_ title: String, value: String) -> some View {
-        HStack {
-            Text(title)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .monospacedDigit()
-        }
-        .font(.caption)
     }
 }

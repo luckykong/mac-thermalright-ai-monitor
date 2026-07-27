@@ -59,6 +59,7 @@ final class AppState {
     // Metrics (for menu bar display)
     private(set) var frameCount = 0
     private(set) var lastFrameSize = 0
+    private(set) var customScriptSnapshot = CustomScriptSnapshot.disabled
 
     // MARK: - Internal
 
@@ -93,6 +94,7 @@ final class AppState {
                 self.statusMessage = status.message
                 self.frameCount = status.frameCount
                 self.lastFrameSize = status.lastFrameSize
+                self.customScriptSnapshot = status.customScriptSnapshot
                 self.runtimeState = Self.runtimeState(for: status)
 
                 // Log state changes + post notification for UI refresh
@@ -108,8 +110,9 @@ final class AppState {
         eng.start(
             set: preferences.currentSet,
             brightness: preferences.brightness,
-            interval: preferences.refreshInterval,
-            rotate: preferences.rotateDisplay)
+            performanceMode: preferences.performanceMode,
+            rotate: preferences.rotateDisplay,
+            customScript: preferences.customScriptConfiguration)
     }
 
     func stop() {
@@ -122,6 +125,7 @@ final class AppState {
         pauseReason = nil
         frameCount = 0
         lastFrameSize = 0
+        customScriptSnapshot = .disabled
         postStateChanged()
     }
 
@@ -136,6 +140,7 @@ final class AppState {
         statusMessage = reason.statusMessage
         frameCount = 0
         lastFrameSize = 0
+        customScriptSnapshot = .disabled
         log("[App] Display output paused (\(reason.rawValue))")
         postStateChanged()
     }
@@ -170,6 +175,7 @@ final class AppState {
         statusMessage = "Disconnected"
         runtimeState = .disconnected
         frameCount = 0
+        customScriptSnapshot = .disabled
         postStateChanged()
     }
 
@@ -178,13 +184,29 @@ final class AppState {
         engine?.updateSettings(
             set: preferences.currentSet,
             brightness: preferences.brightness,
-            interval: preferences.refreshInterval,
-            rotate: preferences.rotateDisplay)
+            performanceMode: preferences.performanceMode,
+            rotate: preferences.rotateDisplay,
+            customScript: preferences.customScriptConfiguration)
     }
 
     /// Latest rendered frame for the on-Mac preview window
     func currentFrame() -> CGImage? {
         engine?.currentFrame()
+    }
+
+    func setPreviewActive(_ active: Bool) {
+        engine?.setPreviewActive(active)
+    }
+
+    func runCustomScriptNow() {
+        engine?.runCustomScriptNow()
+    }
+
+    /// Seeds the documentation-only Settings capture without starting USB or
+    /// executing a script. The guard keeps this out of normal app behavior.
+    func setDocumentationCustomScriptSnapshot(_ snapshot: CustomScriptSnapshot) {
+        guard CommandLine.arguments.contains("--settings-snapshot") else { return }
+        customScriptSnapshot = snapshot
     }
 
     private func postStateChanged() {
@@ -210,6 +232,7 @@ struct EngineStatus: Sendable {
     let message: String
     let frameCount: Int
     let lastFrameSize: Int
+    let customScriptSnapshot: CustomScriptSnapshot
 }
 
 // MARK: - Display Engine (runs entirely off main thread)
@@ -230,8 +253,14 @@ final class DisplayEngine: @unchecked Sendable {
     // Settings (atomically accessed)
     private var currentSet: DisplaySet = .systemMonitor
     private var brightness: Int = 5
-    private var interval: Double = 0.5
+    private var performanceMode: PerformanceMode = .balanced
     private var rotateDisplay: Bool = false
+    private var customScript = CustomScriptConfiguration.disabled
+    private var previewActive = false
+
+    private let frameLock = NSLock()
+    private var latestFrame: CGImage?
+    private var lastProgressStatusAt = Date.distantPast
 
     // Renderers
     private let monitorRenderer = MonitorRenderer()
@@ -240,12 +269,22 @@ final class DisplayEngine: @unchecked Sendable {
         self.statusCallback = statusCallback
     }
 
-    func start(set: DisplaySet, brightness: Int, interval: Double, rotate: Bool) {
+    func start(
+        set: DisplaySet,
+        brightness: Int,
+        performanceMode: PerformanceMode,
+        rotate: Bool,
+        customScript: CustomScriptConfiguration
+    ) {
         enabled = true
         self.currentSet = set
         self.brightness = brightness
-        self.interval = interval
+        self.performanceMode = performanceMode
         self.rotateDisplay = rotate
+        self.customScript = customScript
+        monitorRenderer.configure(
+            performanceMode: performanceMode,
+            customScript: customScript)
 
         usbQueue.async { [weak self] in
             guard let self else { return }
@@ -260,6 +299,9 @@ final class DisplayEngine: @unchecked Sendable {
         enabled = false
         running = false
         monitorRenderer.stopMetrics()
+        frameLock.lock()
+        latestFrame = nil
+        frameLock.unlock()
         removeWorkspaceObservers()
         usbQueue.async { [weak self] in
             self?.hotplug?.stop()
@@ -277,17 +319,57 @@ final class DisplayEngine: @unchecked Sendable {
     }
 
     /// Latest rendered frame for the on-Mac preview window (used while the LCD
-    /// is disconnected). Thread-safe: render() serializes internally.
+    /// is connected). While disconnected, preview rendering is the only producer.
     func currentFrame() -> CGImage? {
-        monitorRenderer.render()
+        if running {
+            frameLock.lock()
+            let frame = latestFrame
+            frameLock.unlock()
+            return frame
+        }
+        guard previewActive else { return nil }
+        monitorRenderer.startMetrics()
+        let frame = monitorRenderer.render()
+        if let frame {
+            frameLock.lock()
+            latestFrame = frame
+            frameLock.unlock()
+        }
+        return frame
     }
 
-    func updateSettings(set: DisplaySet, brightness: Int, interval: Double, rotate: Bool) {
-        log("[Engine] Settings updated: set=\(set.rawValue), brightness=\(brightness), interval=\(interval), rotate=\(rotate)")
+    func updateSettings(
+        set: DisplaySet,
+        brightness: Int,
+        performanceMode: PerformanceMode,
+        rotate: Bool,
+        customScript: CustomScriptConfiguration
+    ) {
+        log("[Engine] Settings updated: set=\(set.rawValue), brightness=\(brightness), performance=\(performanceMode.rawValue), rotate=\(rotate)")
         self.currentSet = set
         self.brightness = brightness
-        self.interval = interval
+        self.performanceMode = performanceMode
         self.rotateDisplay = rotate
+        self.customScript = customScript
+        monitorRenderer.configure(
+            performanceMode: performanceMode,
+            customScript: customScript)
+    }
+
+    func setPreviewActive(_ active: Bool) {
+        usbQueue.async { [weak self] in
+            guard let self else { return }
+            self.previewActive = active
+            if active, !self.running {
+                self.monitorRenderer.startMetrics()
+            } else if !active, !self.running {
+                self.monitorRenderer.stopMetrics()
+            }
+        }
+    }
+
+    func runCustomScriptNow() {
+        monitorRenderer.runCustomScriptNow()
     }
 
     // MARK: - Private (all on usbQueue)
@@ -310,12 +392,15 @@ final class DisplayEngine: @unchecked Sendable {
             try dev.open()
         } catch USBError.deviceNotFound {
             postStatus(connected: false, message: "Device not found")
+            if !previewActive { monitorRenderer.stopMetrics() }
             return
         } catch USBError.deviceBusy {
             postStatus(connected: false, message: "Device busy (Chrome?)")
+            if !previewActive { monitorRenderer.stopMetrics() }
             return
         } catch {
             postStatus(connected: false, message: "Error: \(error)")
+            if !previewActive { monitorRenderer.stopMetrics() }
             return
         }
 
@@ -342,8 +427,9 @@ final class DisplayEngine: @unchecked Sendable {
             // data only changes every ~2s. Run fast (15fps) ONLY while a column is
             // animating (agent working → breathing, or done → blinking); otherwise
             // idle at the configured interval to save CPU/power on this always-on app.
-            let animating = (currentSet == .systemMonitor) && monitorRenderer.wantsHighFrameRate()
-            let frameInterval = animating ? (1.0 / 15.0) : interval
+            let frameInterval = (currentSet == .systemMonitor)
+                ? monitorRenderer.preferredFrameInterval()
+                : performanceMode.idleFrameInterval
             nextDeadline = nextDeadline + .milliseconds(Int(frameInterval * 1000))
 
             // autoreleasepool forces CG raster data / CGImage release each frame
@@ -358,6 +444,9 @@ final class DisplayEngine: @unchecked Sendable {
                 switch set {
                 case .systemMonitor:
                     if let image = monitorRenderer.render() {
+                        frameLock.lock()
+                        latestFrame = image
+                        frameLock.unlock()
                         jpeg = JPEGEncoder.encode(image, brightness: bright, rotate: rotate)
                     } else {
                         jpeg = nil
@@ -420,8 +509,9 @@ final class DisplayEngine: @unchecked Sendable {
             guard let self, self.enabled else { return }
             log("[Hotplug] Device removed")
             self.running = false
-            // Metrics keep collecting — the on-Mac preview window takes over
-            // rendering while the LCD is away
+            if !self.previewActive {
+                self.monitorRenderer.stopMetrics()
+            }
             self.usbQueue.async { [weak self] in
                 self?.device?.close()
                 self?.device = nil
@@ -490,7 +580,13 @@ final class DisplayEngine: @unchecked Sendable {
             deviceInfo: deviceInfo,
             message: message,
             frameCount: frameCount,
-            lastFrameSize: lastFrameSize)
+            lastFrameSize: lastFrameSize,
+            customScriptSnapshot: monitorRenderer.customScriptSnapshot())
+        if connected, message == "Active" {
+            let now = Date()
+            guard now.timeIntervalSince(lastProgressStatusAt) >= 1 else { return }
+            lastProgressStatusAt = now
+        }
         statusCallback(status)
     }
 }

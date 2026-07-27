@@ -1,7 +1,4 @@
-// DesignTokens.swift — Colors, fonts, and layout constants
-//
-// Ported from trcc_monitor.py color/layout definitions.
-// All values match the Python prototype for visual consistency.
+// DesignTokens.swift — Colors, fonts, and 1920×480 dashboard layout constants
 
 import AppKit
 import CoreGraphics
@@ -64,14 +61,25 @@ enum Layout {
     static let height = 480
     static let margin = 14
     static let gap = 10
-    static let panelCount = 5
-    static let panelWidth = (width - 2 * margin - (panelCount - 1) * gap) / panelCount
     static let panelHeight = height - 2 * margin
     static let panelY = margin
 
-    /// X position for panel at index (0-based)
-    static func panelX(_ index: Int) -> Int {
-        margin + index * (panelWidth + gap)
+    // The dashboard deliberately uses a non-uniform split: a compact telemetry
+    // grid on the left and a wide two-column AI activity panel on the right.
+    static let systemX = margin
+    static let systemWidth = 630
+    static let systemColumnWidth = (systemWidth - gap) / 2
+    static let systemRowHeight = (panelHeight - 2 * gap) / 3
+
+    static let agentsX = systemX + systemWidth + gap
+    static let agentsWidth = width - margin - agentsX
+
+    static func systemCardX(_ column: Int) -> Int {
+        systemX + column * (systemColumnWidth + gap)
+    }
+
+    static func systemCardY(_ row: Int) -> Int {
+        panelY + row * (systemRowHeight + gap)
     }
 }
 

@@ -34,6 +34,7 @@ struct MemorySnapshot: Sendable {
 }
 
 struct GPUSnapshot: Sendable {
+    let available: Bool
     let name: String
     let cores: Int
     let deviceUtil: Int    // percentage
@@ -51,8 +52,122 @@ struct DiskSnapshot: Sendable {
 }
 
 struct NetworkSnapshot: Sendable {
+    let available: Bool
     let rxBytesPerSec: Double
     let txBytesPerSec: Double
+}
+
+struct NetworkInterfaceBytes: Equatable, Sendable {
+    let rx: UInt64
+    let tx: UInt64
+}
+
+enum NetworkRateCalculator {
+    /// Only interfaces present in both samples contribute. Counter rollback is
+    /// treated as a new baseline instead of an unsigned underflow/traffic spike.
+    static func byteDelta(
+        current: [Int: NetworkInterfaceBytes],
+        previous: [Int: NetworkInterfaceBytes]
+    ) -> (rx: UInt64, tx: UInt64) {
+        var deltaRx: UInt64 = 0
+        var deltaTx: UInt64 = 0
+        for (index, bytes) in current {
+            guard let old = previous[index] else { continue }
+            if bytes.rx >= old.rx { deltaRx += bytes.rx - old.rx }
+            if bytes.tx >= old.tx { deltaTx += bytes.tx - old.tx }
+        }
+        return (deltaRx, deltaTx)
+    }
+}
+
+enum SMCNumberDecoder {
+    static func fourCC(_ string: String) -> UInt32 {
+        string.utf8.reduce(0) { ($0 << 8) | UInt32($1) }
+    }
+
+    static func decode(
+        dataType: UInt32,
+        bytes: [UInt8],
+        floatLittleEndian: Bool
+    ) -> Double? {
+        func u16() -> UInt16? {
+            guard bytes.count >= 2 else { return nil }
+            return UInt16(bytes[0]) << 8 | UInt16(bytes[1])
+        }
+        func u32() -> UInt32? {
+            guard bytes.count >= 4 else { return nil }
+            return UInt32(bytes[0]) << 24
+                | UInt32(bytes[1]) << 16
+                | UInt32(bytes[2]) << 8
+                | UInt32(bytes[3])
+        }
+        func littleEndianU32() -> UInt32? {
+            guard bytes.count >= 4 else { return nil }
+            return UInt32(bytes[0])
+                | UInt32(bytes[1]) << 8
+                | UInt32(bytes[2]) << 16
+                | UInt32(bytes[3]) << 24
+        }
+
+        if dataType == fourCC("flt ") {
+            guard let raw = floatLittleEndian ? littleEndianU32() : u32() else {
+                return nil
+            }
+            return Double(Float(bitPattern: raw))
+        }
+        if dataType == fourCC("fpe2") {
+            return u16().map { Double($0) / 4.0 }
+        }
+        if dataType == fourCC("sp78") {
+            return u16().map { Double(Int16(bitPattern: $0)) / 256.0 }
+        }
+        if dataType == fourCC("sp87") {
+            return u16().map { Double(Int16(bitPattern: $0)) / 128.0 }
+        }
+        if dataType == fourCC("ui8 ") {
+            return bytes.first.map(Double.init)
+        }
+        if dataType == fourCC("ui16") {
+            return u16().map(Double.init)
+        }
+        if dataType == fourCC("ui32") {
+            return u32().map(Double.init)
+        }
+        if dataType == fourCC("si8 ") {
+            return bytes.first.map { Double(Int8(bitPattern: $0)) }
+        }
+        if dataType == fourCC("si16") {
+            return u16().map { Double(Int16(bitPattern: $0)) }
+        }
+        return nil
+    }
+}
+
+struct FanReading: Sendable {
+    let name: String
+    let currentRPM: Double
+    let minRPM: Double?
+    let maxRPM: Double?
+
+    var percentOfMax: Double? {
+        guard let maxRPM, maxRPM > 0 else { return nil }
+        return min(max(currentRPM / maxRPM * 100, 0), 100)
+    }
+}
+
+struct FanSnapshot: Sendable {
+    /// `available == true && fans.isEmpty` means a genuinely fanless Mac.
+    /// `available == false` means AppleSMC could not be queried.
+    let available: Bool
+    let fans: [FanReading]
+
+    func displayReadings(limit: Int = 3) -> [FanReading] {
+        Array(fans.prefix(max(limit, 0)))
+    }
+
+    func overflowCount(limit: Int = 3) -> Int {
+        max(fans.count - max(limit, 0), 0)
+    }
 }
 
 struct DiskIOSnapshot: Sendable {
@@ -84,9 +199,10 @@ final class SystemMetricsCollector: @unchecked Sendable {
     // Previous CPU ticks for delta calculation
     private var prevTicks: [(user: UInt64, system: UInt64, idle: UInt64, nice: UInt64)] = []
 
-    // Previous network bytes for delta calculation
-    private var prevNetRx: UInt64 = 0
-    private var prevNetTx: UInt64 = 0
+    // Previous per-interface network bytes for delta calculation. Tracking each
+    // interface independently prevents a newly appearing VPN/interface from
+    // producing a huge one-frame throughput spike.
+    private var prevNetInterfaces: [Int: NetworkInterfaceBytes] = [:]
     private var prevNetTime: Date?
 
     // Previous disk IO bytes for delta calculation
@@ -254,7 +370,7 @@ final class SystemMetricsCollector: @unchecked Sendable {
 
     func collectGPU() -> GPUSnapshot {
         var result = GPUSnapshot(
-            name: "GPU", cores: 0, deviceUtil: 0, rendererUtil: 0,
+            available: false, name: "GPU", cores: 0, deviceUtil: 0, rendererUtil: 0,
             tilerUtil: 0, memUsedMB: 0, memAllocMB: 0)
 
         let matching = IOServiceMatching("IOAccelerator")
@@ -289,7 +405,7 @@ final class SystemMetricsCollector: @unchecked Sendable {
                 : "GPU"
 
             result = GPUSnapshot(
-                name: name, cores: cores, deviceUtil: device,
+                available: true, name: name, cores: cores, deviceUtil: device,
                 rendererUtil: renderer, tilerUtil: tiler,
                 memUsedMB: memUsed, memAllocMB: memAlloc)
 
@@ -375,62 +491,72 @@ final class SystemMetricsCollector: @unchecked Sendable {
 
     func collectNetwork() -> NetworkSnapshot {
         let now = Date()
-        let (totalRx, totalTx) = sysctlNetworkBytes()
+        guard let current = sysctlNetworkBytesByInterface() else {
+            return NetworkSnapshot(available: false, rxBytesPerSec: 0, txBytesPerSec: 0)
+        }
 
         var rxPerSec: Double = 0
         var txPerSec: Double = 0
 
-        if let prevTime = prevNetTime, prevNetRx > 0 {
+        if let prevTime = prevNetTime {
             let elapsed = now.timeIntervalSince(prevTime)
             if elapsed > 0 {
-                let dRx = totalRx > prevNetRx ? totalRx - prevNetRx : 0
-                let dTx = totalTx > prevNetTx ? totalTx - prevNetTx : 0
-                rxPerSec = Double(dRx) / elapsed
-                txPerSec = Double(dTx) / elapsed
+                let delta = NetworkRateCalculator.byteDelta(
+                    current: current, previous: prevNetInterfaces)
+                rxPerSec = Double(delta.rx) / elapsed
+                txPerSec = Double(delta.tx) / elapsed
             }
         }
 
-        prevNetRx = totalRx
-        prevNetTx = totalTx
+        prevNetInterfaces = current
         prevNetTime = now
 
-        return NetworkSnapshot(rxBytesPerSec: rxPerSec, txBytesPerSec: txPerSec)
+        return NetworkSnapshot(
+            available: true,
+            rxBytesPerSec: rxPerSec,
+            txBytesPerSec: txPerSec)
     }
 
-    /// Read 64-bit network byte counters via sysctl NET_RT_IFLIST2 (no subprocess).
-    private func sysctlNetworkBytes() -> (rx: UInt64, tx: UInt64) {
+    /// Read 64-bit counters for every non-loopback interface via NET_RT_IFLIST2.
+    private func sysctlNetworkBytesByInterface() -> [Int: NetworkInterfaceBytes]? {
         var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
         var len: Int = 0
-        sysctl(&mib, 6, nil, &len, nil, 0)
-        guard len > 0 else { return (0, 0) }
+        guard sysctl(&mib, 6, nil, &len, nil, 0) == 0, len > 0 else { return nil }
 
         var buf = [UInt8](repeating: 0, count: len)
-        sysctl(&mib, 6, &buf, &len, nil, 0)
+        let readResult = buf.withUnsafeMutableBytes { rawBuffer in
+            sysctl(&mib, 6, rawBuffer.baseAddress, &len, nil, 0)
+        }
+        guard readResult == 0 else { return nil }
 
-        var totalRx: UInt64 = 0
-        var totalTx: UInt64 = 0
+        var result: [Int: NetworkInterfaceBytes] = [:]
         var offset = 0
 
-        while offset < len {
+        while offset + MemoryLayout<if_msghdr>.size <= len {
             let (msgLen, msgType) = buf.withUnsafeBufferPointer { ptr in
                 let p = (ptr.baseAddress! + offset).withMemoryRebound(to: if_msghdr.self, capacity: 1) { $0.pointee }
                 return (Int(p.ifm_msglen), Int32(p.ifm_type))
             }
-            guard msgLen > 0 else { break }
+            guard msgLen > 0, offset + msgLen <= len else { break }
 
-            if msgType == RTM_IFINFO2 {
-                let data = buf.withUnsafeBufferPointer { ptr in
-                    (ptr.baseAddress! + offset).withMemoryRebound(to: if_msghdr2.self, capacity: 1) { $0.pointee.ifm_data }
+            if msgType == RTM_IFINFO2, msgLen >= MemoryLayout<if_msghdr2>.size {
+                let header = buf.withUnsafeBufferPointer { ptr in
+                    (ptr.baseAddress! + offset).withMemoryRebound(to: if_msghdr2.self, capacity: 1) {
+                        $0.pointee
+                    }
                 }
-                if data.ifi_type != 24 {  // skip loopback
-                    totalRx += data.ifi_ibytes
-                    totalTx += data.ifi_obytes
+                let data = header.ifm_data
+                let isUp = (header.ifm_flags & IFF_UP) != 0
+                if data.ifi_type != 24 && isUp {  // IFT_LOOP
+                    result[Int(header.ifm_index)] = NetworkInterfaceBytes(
+                        rx: data.ifi_ibytes,
+                        tx: data.ifi_obytes)
                 }
             }
 
             offset += msgLen
         }
-        return (totalRx, totalTx)
+        return result
     }
 
     // MARK: - Disk I/O (IOKit disk stats)
@@ -482,6 +608,63 @@ final class SystemMetricsCollector: @unchecked Sendable {
         prevDiskTime = now
 
         return DiskIOSnapshot(readBytesPerSec: readPerSec, writeBytesPerSec: writePerSec)
+    }
+
+    // MARK: - Fans (AppleSMC)
+
+    func collectFans() -> FanSnapshot {
+        guard openSMC() else {
+            return FanSnapshot(available: false, fans: [])
+        }
+
+        let countValue = readSMCNumber("FNum")
+        let indexes: [Int]
+        if let countValue {
+            let count = min(max(Int(countValue.rounded()), 0), 16)
+            if count == 0 {
+                return FanSnapshot(available: true, fans: [])
+            }
+            indexes = Array(0..<count)
+        } else {
+            // FNum is standard, but probing keeps fan telemetry useful on models
+            // whose SMC exposes speed keys without the count key.
+            indexes = (0..<10).filter { readSMCNumber("F\($0)Ac") != nil }
+            if indexes.isEmpty {
+                return FanSnapshot(available: false, fans: [])
+            }
+        }
+
+        var fans: [FanReading] = []
+        for index in indexes {
+            guard let current = readSMCNumber("F\(index)Ac"),
+                  current.isFinite, current >= 0
+            else { continue }
+
+            let minValue = readSMCNumber("F\(index)Mn")
+                .flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            let maxValue = readSMCNumber("F\(index)Mx")
+                .flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            let smcName = readSMCString("F\(index)ID")?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = if let smcName, !smcName.isEmpty {
+                smcName
+            } else {
+                "Fan \(index + 1)"
+            }
+
+            fans.append(FanReading(
+                name: name,
+                currentRPM: current,
+                minRPM: minValue,
+                maxRPM: maxValue))
+        }
+
+        // A positive FNum with no readable speed keys is a collection failure,
+        // not a fanless machine.
+        if !indexes.isEmpty && fans.isEmpty {
+            return FanSnapshot(available: false, fans: [])
+        }
+        return FanSnapshot(available: true, fans: fans)
     }
 
     // MARK: - Temperature (SMC)
@@ -577,20 +760,24 @@ final class SystemMetricsCollector: @unchecked Sendable {
 
     // MARK: - SMC Helpers
 
-    private func openSMC() {
+    @discardableResult
+    private func openSMC() -> Bool {
+        if smcOpened { return true }
+
         let matching = IOServiceMatching("AppleSMC")
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS
-        else { return }
+        else { return false }
         defer { IOObjectRelease(iterator) }
 
         let service = IOIteratorNext(iterator)
-        guard service != 0 else { return }
+        guard service != 0 else { return false }
         defer { IOObjectRelease(service) }
 
         if IOServiceOpen(service, mach_task_self_, 0, &smcConn) == KERN_SUCCESS {
             smcOpened = true
         }
+        return smcOpened
     }
 
     // SMCKeyData_t matches the Stats app's struct layout (github.com/exelban/stats)
@@ -631,9 +818,7 @@ final class SystemMetricsCollector: @unchecked Sendable {
     }
 
     private func fourCC(_ s: String) -> UInt32 {
-        var r: UInt32 = 0
-        for c in s.utf8 { r = (r << 8) | UInt32(c) }
-        return r
+        SMCNumberDecoder.fourCC(s)
     }
 
     private func smcCall(_ input: inout SMCKeyData_t, _ output: inout SMCKeyData_t) -> kern_return_t {
@@ -642,7 +827,12 @@ final class SystemMetricsCollector: @unchecked Sendable {
         return IOConnectCallStructMethod(smcConn, 2, &input, inputSize, &output, &outputSize)
     }
 
-    private func readSMCTemp(_ key: String) -> Double? {
+    private struct SMCValue {
+        let dataType: UInt32
+        let bytes: [UInt8]
+    }
+
+    private func readSMCValue(_ key: String) -> SMCValue? {
         guard smcOpened else { return nil }
 
         // Step 1: Get key info
@@ -660,30 +850,41 @@ final class SystemMetricsCollector: @unchecked Sendable {
         ri.data8 = 5  // kSMCReadKey
         guard smcCall(&ri, &ro) == KERN_SUCCESS else { return nil }
 
-        let b = ro.bytes
-        let dt = ko.keyInfo.dataType
-        let t0 = UInt8((dt >> 24) & 0xFF)
-        let t1 = UInt8((dt >> 16) & 0xFF)
-        let t2 = UInt8((dt >> 8) & 0xFF)
-        let t3 = UInt8(dt & 0xFF)
+        var tuple = ro.bytes
+        let size = min(Int(ko.keyInfo.dataSize), 32)
+        let bytes = withUnsafeBytes(of: &tuple) { raw in
+            Array(raw.prefix(size))
+        }
+        return SMCValue(dataType: ko.keyInfo.dataType, bytes: bytes)
+    }
 
-        // "flt " (0x666C7420) = IEEE float
-        if (t0, t1, t2, t3) == (0x66, 0x6C, 0x74, 0x20) {
-            let raw = (UInt32(b.0) << 24) | (UInt32(b.1) << 16) | (UInt32(b.2) << 8) | UInt32(b.3)
-            return Double(Float(bitPattern: raw))
+    private func readSMCNumber(_ key: String) -> Double? {
+        guard let value = readSMCValue(key) else { return nil }
+        #if arch(arm64)
+        let floatLittleEndian = true
+        #else
+        let floatLittleEndian = false
+        #endif
+        return SMCNumberDecoder.decode(
+            dataType: value.dataType,
+            bytes: value.bytes,
+            floatLittleEndian: floatLittleEndian)
+    }
+
+    private func readSMCString(_ key: String) -> String? {
+        guard let value = readSMCValue(key) else { return nil }
+        let bytes = value.bytes.prefix { $0 != 0 }
+        guard !bytes.isEmpty else { return nil }
+        return String(bytes: bytes, encoding: .utf8)
+    }
+
+    private func readSMCTemp(_ key: String) -> Double? {
+        readSMCNumber(key)
+    }
+
+    deinit {
+        if smcOpened {
+            IOServiceClose(smcConn)
         }
-        // "sp78" = signed 7.8 fixed point (value / 256)
-        if (t0, t1, t2, t3) == (0x73, 0x70, 0x37, 0x38) {
-            return Double(Int16(bigEndian: Int16(UInt16(b.0) << 8 | UInt16(b.1)))) / 256.0
-        }
-        // "sp87" = signed 8.7 fixed point (value / 128)
-        if (t0, t1, t2, t3) == (0x73, 0x70, 0x38, 0x37) {
-            return Double(Int16(bigEndian: Int16(UInt16(b.0) << 8 | UInt16(b.1)))) / 128.0
-        }
-        // "ui8 "
-        if (t0, t1, t2, t3) == (0x75, 0x69, 0x38, 0x20) {
-            return Double(b.0)
-        }
-        return nil
     }
 }

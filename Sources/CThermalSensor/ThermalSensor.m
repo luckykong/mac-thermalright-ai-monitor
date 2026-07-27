@@ -106,16 +106,35 @@ void readThermalSensors(double *cpuTemp, double *gpuTemp) {
 void mactrMultiplyRGB(uint8_t *bytes, size_t pixelCount, double factor) {
     if (!bytes || pixelCount == 0 || factor <= 1.0) return;
 
-    uint8_t table[256];
-    for (size_t value = 0; value < 256; value++) {
-        double scaled = (double)value * factor;
-        table[value] = (uint8_t)(scaled >= 255.0 ? 255 : scaled + 0.5);
+    // Gain is capped per pixel so the brightest channel lands exactly on 255.
+    //
+    // Scaling each channel independently and clipping drains saturation: a
+    // channel already above 255/factor stops at the ceiling while the darker
+    // channels keep climbing, so every vivid colour slides toward white. At the
+    // default factor of 2.2 that turned the accent red (239,68,68) into a pale
+    // (255,152,128) and Bongo Cat's pink paws (244,150,174) into pure white —
+    // which is exactly how it looked on the panel while the preview window,
+    // which never runs this pass, stayed correct.
+    //
+    // Capping instead preserves the ratios between channels, and therefore hue
+    // and saturation. Dark pixels — nearly the whole dashboard — still receive
+    // the full factor, because nothing there is close to clipping.
+    double gainForPeak[256];
+    gainForPeak[0] = factor;
+    for (size_t peak = 1; peak < 256; peak++) {
+        double ceilingGain = 255.0 / (double)peak;
+        gainForPeak[peak] = factor < ceilingGain ? factor : ceilingGain;
     }
 
     for (size_t pixel = 0; pixel < pixelCount; pixel++) {
         uint8_t *rgba = bytes + pixel * 4;
-        rgba[0] = table[rgba[0]];
-        rgba[1] = table[rgba[1]];
-        rgba[2] = table[rgba[2]];
+        uint8_t peak = rgba[0] > rgba[1] ? rgba[0] : rgba[1];
+        if (rgba[2] > peak) peak = rgba[2];
+        if (peak == 0) continue;
+
+        double gain = gainForPeak[peak];
+        rgba[0] = (uint8_t)((double)rgba[0] * gain + 0.5);
+        rgba[1] = (uint8_t)((double)rgba[1] * gain + 0.5);
+        rgba[2] = (uint8_t)((double)rgba[2] * gain + 0.5);
     }
 }

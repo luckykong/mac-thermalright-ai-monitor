@@ -20,6 +20,14 @@ All notable changes to MacTR are documented here.
 
 ### Fixed
 
+- Fixed the brightness pass draining colour from the LCD. It scaled each channel
+  independently and clipped at 255, so any channel already above 255/factor stopped at
+  the ceiling while the darker channels kept climbing — every vivid colour slid toward
+  white. At the default factor of 2.2 the accent red (239,68,68) rendered as a washed
+  (255,152,128) and Bongo Cat's pink paws became pure white. Gain is now capped per
+  pixel so the brightest channel lands exactly on 255, preserving the ratios between
+  channels and therefore hue and saturation; dark pixels still get the full factor. The
+  preview window never ran this pass, which is why only the panel looked faded.
 - Fixed the quota reset countdown mixing languages: the split two-window layout fell
   back to a bare "3h"/"4d" while Codex showed "5 天后重置" in the same panel.
 

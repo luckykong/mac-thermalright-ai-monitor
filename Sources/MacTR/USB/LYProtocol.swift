@@ -94,7 +94,7 @@ enum LYProtocol {
         let sub: Int
         let pid = device.pid
 
-        if pid == 0x5408 {  // LY type
+        if pid == USBDeviceIdentity.ly {  // LY type
             var rawPM = Int(resp[20])
             if rawPM <= 3 { rawPM = 1 }
             pm = 64 + rawPM
@@ -147,9 +147,12 @@ enum LYProtocol {
     /// Send one JPEG frame using LY chunked bulk protocol.
     static func sendFrame(device: USBDevice, jpegData: Data) throws {
         let pid = device.pid
-        let chunkCmd: UInt8 = (pid == 0x5408) ? 0x01 : 0x02
+        let chunkCmd: UInt8 = (pid == USBDeviceIdentity.ly) ? 0x01 : 0x02
 
         let totalSize = jpegData.count
+        guard totalSize <= maxJPEGSize else {
+            throw LYError.frameTooLarge(totalSize)
+        }
         let numChunks = totalSize / chunkDataSize + 1
         let lastChunkData = totalSize % chunkDataSize
 
@@ -197,7 +200,7 @@ enum LYProtocol {
         }
 
         // Pad chunk count to multiple of 4 (LY type) or 1 (LY1)
-        let padMultiple = (pid == 0x5408) ? 4 : 1
+        let padMultiple = (pid == USBDeviceIdentity.ly) ? 4 : 1
         var paddedChunks = numChunks
         let remainder = paddedChunks % padMultiple
         if remainder != 0 {
@@ -219,11 +222,15 @@ enum LYProtocol {
             if remaining >= usbWriteSize {
                 writeSize = usbWriteSize
             } else {
-                writeSize = (pid == 0x5408) ? min(2048, remaining) : remaining
+                writeSize = (pid == USBDeviceIdentity.ly) ? min(2048, remaining) : remaining
             }
             let slice = sendBuf[pos..<pos + writeSize]
             _ = try device.bulkWrite(Data(slice), timeout: 5000)
-            pos += usbWriteSize
+            // Advance by what was actually written. This used to add
+            // usbWriteSize unconditionally, which only happened to be correct
+            // because padding makes totalBytes a multiple of 2048 for LY —
+            // any change to padMultiple would have silently truncated frames.
+            pos += writeSize
         }
 
         // Read ACK

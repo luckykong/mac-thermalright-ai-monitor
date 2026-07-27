@@ -28,22 +28,38 @@ enum USBError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .initFailed(let code): "libusb init failed (code \(code))"
-        case .deviceNotFound: "Device not found (VID:0416 PID:5408/5409)"
+        case .deviceNotFound: "Device not found (\(USBDeviceIdentity.summary))"
         case .openFailed(let code): "Failed to open device (code \(code))"
         case .configurationFailed(let code): "Failed to set configuration (code \(code))"
         case .claimFailed(let code): "Failed to claim interface (code \(code))"
         case .writeFailed(let code): "Bulk write failed (code \(code))"
         case .readFailed(let code): "Bulk read failed (code \(code))"
-        case .deviceBusy: "Device in use by another application (Chrome WebUSB?)"
+        case .deviceBusy:
+            "Device in use by another application (another MacTR instance, or Chrome WebUSB?)"
         }
     }
 }
 
-// MARK: - Constants
+// MARK: - Device Identity
 
-private let VID: UInt16 = 0x0416
-private let PID_LY: UInt16 = 0x5408
-private let PID_LY1: UInt16 = 0x5409
+/// Single source of truth for the devices MacTR drives. `USBDevice` matches
+/// against it through libusb; `USBHotplug` builds its IOKit matching
+/// dictionaries from the same list.
+enum USBDeviceIdentity {
+    static let vendorID: UInt16 = 0x0416
+    static let ly: UInt16 = 0x5408
+    static let ly1: UInt16 = 0x5409
+
+    /// Probe order — LY first, then LY1.
+    static let productIDs: [UInt16] = [ly, ly1]
+
+    static var summary: String {
+        let pids = productIDs
+            .map { String(format: "%04x", $0) }
+            .joined(separator: "/")
+        return "VID:\(String(format: "%04x", vendorID)) PID:\(pids)"
+    }
+}
 
 // MARK: - USBDevice
 
@@ -68,9 +84,9 @@ final class USBDevice: @unchecked Sendable {
         }
         context = ctx
 
-        // Try PID_LY first, then PID_LY1
-        for tryPID in [PID_LY, PID_LY1] {
-            handle = libusb_open_device_with_vid_pid(context, VID, tryPID)
+        for tryPID in USBDeviceIdentity.productIDs {
+            handle = libusb_open_device_with_vid_pid(
+                context, USBDeviceIdentity.vendorID, tryPID)
             if handle != nil {
                 pid = tryPID
                 break
@@ -95,16 +111,39 @@ final class USBDevice: @unchecked Sendable {
             }
         }
 
-        // Set configuration
+        // Set configuration.
+        //
+        // On macOS an exclusive-access conflict surfaces HERE rather than at
+        // libusb_claim_interface below: when another process already owns the
+        // vendor interface, set_configuration returns NO_DEVICE (-4), and in
+        // some cases ACCESS (-3), even though the device is still enumerated.
+        // Reporting the raw code left users reading
+        // "Failed to set configuration (code -4)" while the friendly
+        // deviceBusy branch further down was effectively unreachable.
         let configResult = libusb_set_configuration(handle, 1)
-        if configResult != LIBUSB_SUCCESS.rawValue
-            && configResult != LIBUSB_ERROR_BUSY.rawValue
+        if configResult != LIBUSB_SUCCESS.rawValue,
+           configResult != LIBUSB_ERROR_BUSY.rawValue
         {
-            throw USBError.configurationFailed(configResult)
+            let looksOccupied = configResult == LIBUSB_ERROR_NO_DEVICE.rawValue
+                || configResult == LIBUSB_ERROR_ACCESS.rawValue
+            close()
+            guard looksOccupied else {
+                throw USBError.configurationFailed(configResult)
+            }
+            // Still enumerated by IOKit → somebody else holds it.
+            // Really gone → it was unplugged between open() and now.
+            throw USBHotplug.isDevicePresent()
+                ? USBError.deviceBusy
+                : USBError.deviceNotFound
         }
 
         // Find vendor-specific interface and endpoints
-        try findEndpoints()
+        do {
+            try findEndpoints()
+        } catch {
+            close()
+            throw error
+        }
 
         // Claim interface
         let claimResult = libusb_claim_interface(handle, interfaceNumber)
@@ -117,7 +156,7 @@ final class USBDevice: @unchecked Sendable {
             throw USBError.claimFailed(claimResult)
         }
 
-        print("[USB] Opened \(String(format: "%04x:%04x", VID, pid))"
+        print("[USB] Opened \(String(format: "%04x:%04x", USBDeviceIdentity.vendorID, pid))"
               + "  EP_OUT=0x\(String(format: "%02x", epOut))"
               + "  EP_IN=0x\(String(format: "%02x", epIn))")
     }

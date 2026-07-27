@@ -7,6 +7,7 @@
 import AppKit
 import Foundation
 import Observation
+import Synchronization
 
 // MARK: - Display Set
 
@@ -264,8 +265,24 @@ final class DisplayEngine: @unchecked Sendable {
     private let usbQueue = DispatchQueue(label: "com.thermalvision.usb")
     private var device: USBDevice?
     private var hotplug: USBHotplug?
-    private var enabled = false
-    private var running = false
+
+    // `enabled` and `running` are read and written from the main thread
+    // (start/stop), from usbQueue (the frame loop) and from the IOKit hotplug
+    // queue. As plain Bools that was a data race which @unchecked Sendable hid
+    // from the compiler; the computed wrappers keep every call site unchanged.
+    private let enabledFlag = Atomic<Bool>(false)
+    private let runningFlag = Atomic<Bool>(false)
+
+    private var enabled: Bool {
+        get { enabledFlag.load(ordering: .acquiring) }
+        set { enabledFlag.store(newValue, ordering: .releasing) }
+    }
+
+    private var running: Bool {
+        get { runningFlag.load(ordering: .acquiring) }
+        set { runningFlag.store(newValue, ordering: .releasing) }
+    }
+
     private var frameCount = 0
     private var lastFrameSize = 0
     private let observerLock = NSLock()
@@ -409,13 +426,40 @@ final class DisplayEngine: @unchecked Sendable {
 
     // MARK: - Private (all on usbQueue)
 
+    /// The sole connection driver on usbQueue: establish a link, stream frames
+    /// until it drops, back off, retry — as a loop.
+    ///
+    /// This used to be mutual recursion (connectAndRun → runFrameLoop →
+    /// connectAndRun on a send error), so every reconnect cycle pushed two
+    /// stack frames that never unwound. On a flaky cable that grows without
+    /// bound for as long as the app runs.
     private func connectAndRun() {
         guard enabled, !running else { return }
 
-        // Ensure metrics collection is running (may have been stopped on disconnect/sleep)
+        var backoff: TimeInterval = 5
+        while enabled {
+            guard let connection = establishConnection() else { return }
+
+            backoff = 5
+            // Returns only once the link drops or the engine is stopped.
+            runFrameLoop(device: connection.device, info: connection.info)
+
+            guard enabled else { return }
+            log("[Engine] Will retry connection in \(Int(backoff))s...")
+            Thread.sleep(forTimeInterval: backoff)
+            backoff = min(backoff * 2, 60)
+        }
+    }
+
+    /// Opens the device and completes the handshake.
+    ///
+    /// Returns nil when there is nothing worth retrying against right now — no
+    /// device, or another process owns it. Hotplug and wake notifications call
+    /// back in when that changes, so spinning here would only burn power.
+    private func establishConnection() -> (device: USBDevice, info: DeviceInfo)? {
+        // Metrics may have been stopped on a previous disconnect or on sleep.
         monitorRenderer.startMetrics()
 
-        // Close existing connection
         device?.close()
         device = nil
         frameCount = 0
@@ -425,18 +469,15 @@ final class DisplayEngine: @unchecked Sendable {
         let dev = USBDevice()
         do {
             try dev.open()
-        } catch USBError.deviceNotFound {
-            postStatus(connected: false, message: "Device not found")
-            if !previewActive { monitorRenderer.stopMetrics() }
-            return
-        } catch USBError.deviceBusy {
-            postStatus(connected: false, message: "Device busy (Chrome?)")
-            if !previewActive { monitorRenderer.stopMetrics() }
-            return
         } catch {
-            postStatus(connected: false, message: "Error: \(error)")
+            let message = switch error {
+            case USBError.deviceNotFound: "Device not found"
+            case USBError.deviceBusy: "Device busy (another app?)"
+            default: "Error: \(error)"
+            }
+            postStatus(connected: false, message: message)
             if !previewActive { monitorRenderer.stopMetrics() }
-            return
+            return nil
         }
 
         do {
@@ -444,15 +485,19 @@ final class DisplayEngine: @unchecked Sendable {
             device = dev
             postStatus(connected: true, deviceInfo: info,
                        message: "Connected (\(info.width)x\(info.height))")
-            runFrameLoop(device: dev, info: info)
+            return (dev, info)
         } catch {
             dev.close()
             postStatus(connected: false, message: "Handshake failed")
+            return nil
         }
     }
 
     private func runFrameLoop(device: USBDevice, info: DeviceInfo) {
         running = true
+        // Clearing on every exit path — including "enabled went false" — keeps a
+        // later connectAndRun() from being blocked by its own `!running` guard.
+        defer { running = false }
         // Metrics already collecting in background via startMetrics()
 
         var nextDeadline = DispatchTime.now()
@@ -500,16 +545,14 @@ final class DisplayEngine: @unchecked Sendable {
                                    message: "Active")
                     } catch {
                         log("[ERROR] Frame send failed: \(error)")
-                        running = false
                         self.device?.close()
                         self.device = nil
                         postStatus(connected: false, message: "Disconnected (send error)")
-
-                        guard self.enabled else { return }
-                        log("[Engine] Will retry connection in 5s...")
-                        Thread.sleep(forTimeInterval: 5)
-                        guard self.enabled else { return }
-                        connectAndRun()
+                        // Drop out of the frame loop and let connectAndRun()
+                        // own the backoff and reconnect. (`return` here only
+                        // leaves the autoreleasepool closure, so clearing
+                        // `running` is what actually ends the loop.)
+                        running = false
                         return
                     }
                 }
@@ -543,14 +586,20 @@ final class DisplayEngine: @unchecked Sendable {
         hp.onDisconnect = { [weak self] in
             guard let self, self.enabled else { return }
             log("[Hotplug] Device removed")
+            // Deliberately set from the hotplug queue, not usbQueue: the frame
+            // loop is occupying usbQueue and clearing this flag is the only
+            // thing that makes it return. Safe now that it is atomic.
             self.running = false
-            if !self.previewActive {
-                self.monitorRenderer.stopMetrics()
-            }
+            // Everything else touches usbQueue-owned state, so it goes through
+            // the queue — `previewActive` in particular was being read here.
             self.usbQueue.async { [weak self] in
-                self?.device?.close()
-                self?.device = nil
-                self?.postStatus(connected: false, message: "Disconnected (unplugged)")
+                guard let self else { return }
+                self.device?.close()
+                self.device = nil
+                if !self.previewActive {
+                    self.monitorRenderer.stopMetrics()
+                }
+                self.postStatus(connected: false, message: "Disconnected (unplugged)")
             }
         }
 

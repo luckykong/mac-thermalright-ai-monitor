@@ -4,7 +4,7 @@
 // The frame loop calls render() to get a CGImage, then encodes it to JPEG.
 
 import CoreGraphics
-import CoreImage
+import CThermalSensor
 import Foundation
 import ImageIO
 
@@ -19,62 +19,71 @@ protocol FrameRenderer {
 
 enum JPEGEncoder {
 
-    // Reusable context for 180° rotation — prevents CG raster data leak
-    nonisolated(unsafe) private static var rotateCtx: CGContext?
+    // One reusable RGBA raster replaces the old Core Image brightness pipeline.
+    // CIContext retained per-frame intermediates on the always-on LCD path.
+    nonisolated(unsafe) private static var processingCtx: CGContext?
+    private static let encodeLock = NSLock()
 
     /// Encode CGImage to JPEG Data with 180° rotation and brightness adjustment.
     /// Reduces quality if over 650KB (matches Python behavior).
     static func encode(
         _ image: CGImage, brightness: Int = 1, rotate: Bool = true, maxBytes: Int = 650_000
     ) -> Data? {
-        let w = image.width
-        let h = image.height
+        encodeLock.lock()
+        defer { encodeLock.unlock() }
+        return autoreleasepool {
+            let w = image.width
+            let h = image.height
+            var finalImage = image
 
-        var finalImage: CGImage
-
-        if !rotate {
-            // Reuse rotation context
-            if rotateCtx == nil || rotateCtx!.width != w || rotateCtx!.height != h {
-                let colorSpace = CGColorSpaceCreateDeviceRGB()
-                rotateCtx = CGContext(
-                    data: nil, width: w, height: h,
-                    bitsPerComponent: 8, bytesPerRow: w * 4,
-                    space: colorSpace,
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-            }
-            guard let rotatedCtx = rotateCtx else { return nil }
-
-            // 180° rotation
-            rotatedCtx.saveGState()
-            rotatedCtx.translateBy(x: CGFloat(w), y: CGFloat(h))
-            rotatedCtx.scaleBy(x: -1, y: -1)
-            rotatedCtx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-            rotatedCtx.restoreGState()
-
-            guard let rotated = rotatedCtx.makeImage() else { return nil }
-            finalImage = rotated
-        } else {
-            finalImage = image
-        }
-
-        // Apply brightness if needed
-        if brightness > 1 {
-            if let brightened = applyBrightness(finalImage, level: brightness) {
-                finalImage = brightened
-            }
-        }
-
-        // Encode to JPEG with quality reduction loop
-        var quality = 0.9
-        while quality > 0.3 {
-            if let data = jpegData(from: finalImage, quality: quality) {
-                if data.count <= maxBytes || quality <= 0.3 {
-                    return data
+            if !rotate || brightness > 1 {
+                if processingCtx == nil
+                    || processingCtx!.width != w
+                    || processingCtx!.height != h
+                {
+                    let colorSpace = CGColorSpaceCreateDeviceRGB()
+                    processingCtx = CGContext(
+                        data: nil,
+                        width: w,
+                        height: h,
+                        bitsPerComponent: 8,
+                        bytesPerRow: w * 4,
+                        space: colorSpace,
+                        bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+                            | CGImageAlphaInfo.premultipliedLast.rawValue)
                 }
+                guard let ctx = processingCtx else { return nil }
+                ctx.saveGState()
+                ctx.setBlendMode(.copy)
+                ctx.clear(CGRect(x: 0, y: 0, width: w, height: h))
+                if !rotate {
+                    ctx.translateBy(x: CGFloat(w), y: CGFloat(h))
+                    ctx.scaleBy(x: -1, y: -1)
+                }
+                ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+                ctx.restoreGState()
+
+                if brightness > 1 {
+                    multiplyRGB(
+                        context: ctx,
+                        factor: Brightness.factor(for: brightness))
+                }
+                guard let processed = ctx.makeImage() else { return nil }
+                finalImage = processed
             }
-            quality -= 0.05
+
+            // Encode to JPEG with quality reduction loop
+            var quality = 0.9
+            while quality > 0.3 {
+                if let data = jpegData(from: finalImage, quality: quality) {
+                    if data.count <= maxBytes || quality <= 0.3 {
+                        return data
+                    }
+                }
+                quality -= 0.05
+            }
+            return jpegData(from: finalImage, quality: 0.3)
         }
-        return jpegData(from: finalImage, quality: 0.3)
     }
 
     private static func jpegData(from image: CGImage, quality: Double) -> Data? {
@@ -91,30 +100,12 @@ enum JPEGEncoder {
         return data as Data
     }
 
-    // Reusable CIContext for brightness filter
-    nonisolated(unsafe) private static var ciCtx: CIContext?
-
-    /// Apply brightness using CIFilter — matches Python ImageEnhance.Brightness behavior.
-    /// PIL Brightness multiplies RGB values by factor. CIFilter.colorControls brightness
-    /// parameter is additive (-1 to 1), so we use a combination approach.
-    private static func applyBrightness(_ image: CGImage, level: Int) -> CGImage? {
-        let factor = Brightness.factor(for: level)
-        if factor <= 1.0 { return image }
-
-        let ciImage = CIImage(cgImage: image)
-
-        // Use colorMatrix to multiply RGB by factor (same as PIL Brightness)
-        guard let filter = CIFilter(name: "CIColorMatrix") else { return nil }
-        filter.setValue(ciImage, forKey: kCIInputImageKey)
-        let f = Float(factor)
-        filter.setValue(CIVector(x: CGFloat(f), y: 0, z: 0, w: 0), forKey: "inputRVector")
-        filter.setValue(CIVector(x: 0, y: CGFloat(f), z: 0, w: 0), forKey: "inputGVector")
-        filter.setValue(CIVector(x: 0, y: 0, z: CGFloat(f), w: 0), forKey: "inputBVector")
-        filter.setValue(CIVector(x: 0, y: 0, z: 0, w: 1), forKey: "inputAVector")
-        filter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
-
-        guard let output = filter.outputImage else { return nil }
-        if ciCtx == nil { ciCtx = CIContext() }
-        return ciCtx!.createCGImage(output, from: output.extent)
+    private static func multiplyRGB(context: CGContext, factor: CGFloat) {
+        guard factor > 1, let raw = context.data else { return }
+        let bytes = raw.assumingMemoryBound(to: UInt8.self)
+        mactrMultiplyRGB(
+            bytes,
+            context.width * context.height,
+            Double(factor))
     }
 }

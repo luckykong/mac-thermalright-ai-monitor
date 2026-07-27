@@ -102,3 +102,20 @@ void readThermalSensors(double *cpuTemp, double *gpuTemp) {
 
     CFRelease(services);
 }
+
+void mactrMultiplyRGB(uint8_t *bytes, size_t pixelCount, double factor) {
+    if (!bytes || pixelCount == 0 || factor <= 1.0) return;
+
+    uint8_t table[256];
+    for (size_t value = 0; value < 256; value++) {
+        double scaled = (double)value * factor;
+        table[value] = (uint8_t)(scaled >= 255.0 ? 255 : scaled + 0.5);
+    }
+
+    for (size_t pixel = 0; pixel < pixelCount; pixel++) {
+        uint8_t *rgba = bytes + pixel * 4;
+        rgba[0] = table[rgba[0]];
+        rgba[1] = table[rgba[1]];
+        rgba[2] = table[rgba[2]];
+    }
+}

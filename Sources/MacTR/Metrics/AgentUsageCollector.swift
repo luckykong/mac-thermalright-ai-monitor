@@ -457,7 +457,7 @@ final class AgentUsageCollector: @unchecked Sendable {
     /// slowly; lines without a populated primary don't contain "used_percent" and are
     /// rejected cheaply, so the reversed scan stops at each file's newest reading fast.
     private func updateCodexQuota() {
-        if let last = codexQuotaLastScan, Date().timeIntervalSince(last) < 20,
+        if let last = codexQuotaLastScan, Date().timeIntervalSince(last) < 60,
            codexQuotaCache != nil { return }
         codexQuotaLastScan = Date()
 
@@ -474,25 +474,26 @@ final class AgentUsageCollector: @unchecked Sendable {
                 guard let attrs = try? fm.attributesOfItem(atPath: path),
                       let mtime = attrs[.modificationDate] as? Date, mtime >= cutoff
                 else { continue }
-                // First (newest) populated reading in this file; update global if newer
-                for line in tailLines(path: path, maxBytes: 16 * 1024 * 1024).reversed() {
-                    guard line.contains("used_percent"),
-                          let obj = parseJSON(line),
-                          let ts = obj["timestamp"] as? String,
-                          let payload = obj["payload"] as? [String: Any],
-                          let limits = payload["rate_limits"] as? [String: Any],
-                          let primary = limits["primary"] as? [String: Any],
-                          let used = (primary["used_percent"] as? NSNumber)?.doubleValue
-                    else { continue }
-                    if ts > codexQuotaTS {
-                        codexQuotaTS = ts
-                        var resets: Date?
-                        if let r = (primary["resets_at"] as? NSNumber)?.doubleValue {
-                            resets = Date(timeIntervalSince1970: r)
-                        }
-                        codexQuotaCache = (used, resets)
+                // Search backwards in fixed-size chunks. Large rollout files no
+                // longer allocate a 16 MB Data buffer on every quota refresh.
+                guard let line = newestMatchingLine(
+                    path: path,
+                    maxBytes: 16 * 1024 * 1024,
+                    containing: "used_percent"),
+                    let obj = parseJSON(line),
+                    let ts = obj["timestamp"] as? String,
+                    let payload = obj["payload"] as? [String: Any],
+                    let limits = payload["rate_limits"] as? [String: Any],
+                    let primary = limits["primary"] as? [String: Any],
+                    let used = (primary["used_percent"] as? NSNumber)?.doubleValue
+                else { continue }
+                if ts > codexQuotaTS {
+                    codexQuotaTS = ts
+                    var resets: Date?
+                    if let r = (primary["resets_at"] as? NSNumber)?.doubleValue {
+                        resets = Date(timeIntervalSince1970: r)
                     }
-                    break  // done with this file; other files may still be newer
+                    codexQuotaCache = (used, resets)
                 }
             }
         }
@@ -631,19 +632,33 @@ final class AgentUsageCollector: @unchecked Sendable {
         guard size > offset, let fh = FileHandle(forReadingAtPath: path) else { return }
         defer { try? fh.close() }
         try? fh.seek(toOffset: offset)
-        guard let data = try? fh.readToEnd(), !data.isEmpty else { return }
 
-        // Only consume up to the last newline — the writer may be mid-line
-        guard let lastNL = data.lastIndex(of: UInt8(ascii: "\n")) else { return }
-        offsets[path] = offset + UInt64(lastNL) + 1
-
-        let complete = data[data.startIndex...lastNL]
-        for chunk in complete.split(separator: UInt8(ascii: "\n")) {
-            guard let line = String(data: Data(chunk), encoding: .utf8),
-                  line.contains(prefilter)
-            else { continue }
-            handler(line)
+        let chunkSize = 512 * 1024
+        var buffer = Data()
+        var consumedOffset = offset
+        while let chunk = try? fh.read(upToCount: chunkSize),
+              !chunk.isEmpty
+        {
+            buffer.append(chunk)
+            var consumedInBuffer = 0
+            while let newline = buffer[consumedInBuffer...]
+                .firstIndex(of: UInt8(ascii: "\n"))
+            {
+                let bytes = buffer[consumedInBuffer..<newline]
+                if let line = String(data: Data(bytes), encoding: .utf8),
+                   line.contains(prefilter)
+                {
+                    handler(line)
+                }
+                consumedInBuffer = newline + 1
+            }
+            if consumedInBuffer > 0 {
+                buffer.removeSubrange(0..<consumedInBuffer)
+                consumedOffset += UInt64(consumedInBuffer)
+            }
         }
+        // Preserve an incomplete final line for the writer to finish.
+        offsets[path] = consumedOffset
     }
 
     /// Read complete lines from the tail (or head, if headBytes > 0) of a file.
@@ -663,6 +678,55 @@ final class AgentUsageCollector: @unchecked Sendable {
         return data.split(separator: UInt8(ascii: "\n")).compactMap {
             String(data: Data($0), encoding: .utf8)
         }
+    }
+
+    /// Return the newest complete line containing `needle`, scanning backwards
+    /// with bounded memory. The total search window may be large, but each read is
+    /// only 256 KB plus at most one partial line.
+    private func newestMatchingLine(
+        path: String,
+        maxBytes: Int,
+        containing needle: String
+    ) -> String? {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+        let size = (try? fh.seekToEnd()) ?? 0
+        let lowerBound = size > UInt64(maxBytes) ? size - UInt64(maxBytes) : 0
+        var cursor = size
+        var suffix = Data()
+        let chunkSize: UInt64 = 256 * 1024
+
+        while cursor > lowerBound {
+            let candidateStart = cursor > chunkSize ? cursor - chunkSize : 0
+            let start = max(lowerBound, candidateStart)
+            try? fh.seek(toOffset: start)
+            guard let chunk = try? fh.read(upToCount: Int(cursor - start)),
+                  !chunk.isEmpty
+            else { break }
+
+            var combined = chunk
+            combined.append(suffix)
+            let parts = combined.split(
+                separator: UInt8(ascii: "\n"),
+                omittingEmptySubsequences: false)
+            let firstCompleteIndex = start == 0 ? 0 : 1
+            if parts.count > firstCompleteIndex {
+                for index in stride(
+                    from: parts.count - 1,
+                    through: firstCompleteIndex,
+                    by: -1)
+                {
+                    guard !parts[index].isEmpty,
+                          let line = String(data: Data(parts[index]), encoding: .utf8),
+                          line.contains(needle)
+                    else { continue }
+                    return line
+                }
+            }
+            suffix = parts.first.map { Data($0) } ?? Data()
+            cursor = start
+        }
+        return nil
     }
 
     private func parseJSON(_ s: String) -> [String: Any]? {

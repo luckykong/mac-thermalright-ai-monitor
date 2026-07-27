@@ -48,10 +48,13 @@ narrower without removing project, message, step, token, or quota details.
 - **GPU** — device, renderer and tiler utilization, temperature and allocated memory.
 - **Memory** — pressure-colored usage gauge plus Active/Wired/Compressed/Available details.
 - **Network** — live DOWN and UP rates share one row; both rates are also called out
-  inside the mirrored 30-second trend graph.
-- **Fans** — built-in fan RPM is integrated into the clock/Bongo Cat card. The rotor
-  above the cat accelerates with RPM. A one-fan Mac shows one reading; multi-fan Macs
-  use `×N`; `FANLESS` and `N/A` remain distinct.
+  inside the mirrored 30-second trend graph. Current values and individual history
+  bars keep their direction color through 5 MB/s, turn orange above 5 MB/s, and red
+  above 10 MB/s.
+- **Fans** — built-in fan RPM is integrated into the clock/Bongo Cat card. A compact
+  rotor sits inline with its RPM and accelerates with the fan while leaving clear
+  space above the cat. A one-fan Mac shows one reading; multi-fan Macs use `×N`;
+  `FANLESS` and `N/A` remain distinct.
 - **Clock** — large time, plus date, seconds, uptime, and process count.
 
 ### 🧩 Custom script card
@@ -113,20 +116,16 @@ log size, and telemetry availability affect the result.
 <sub>The menu image is captured from the running native `NSMenu`; the Settings image
 is the real SwiftUI interface from the same build.</sub>
 
-## Download & install
+## Distribution
 
-Download either artifact from
-[GitHub Releases](https://github.com/luckykong/mac-thermalright-ai-monitor/releases/tag/v1.4.1):
+This repository **does not provide prebuilt apps, DMGs, or ZIPs anymore**. GitHub
+Releases retain version history and GitHub-generated source archives only; those
+`Source code` archives are not executable applications.
 
-- `MacTR-v1.4.1-macos-arm64.dmg` — recommended; open it and drag MacTR to Applications.
-- `MacTR-v1.4.1-macos-arm64.zip` — unzip and move `MacTR.app` to Applications.
-
-libusb is bundled. End users **do not need Homebrew, Swift, Xcode, or any other runtime**.
-
-> This community build is ad-hoc signed and cannot be Apple-notarized without a
-> Developer ID. On first launch, Control-click or right-click `MacTR.app`, choose
-> **Open**, then confirm once. Normal double-click launch works afterward. Do not
-> disable Gatekeeper globally.
+The current UI contains decorative third-party Bongo Cat and Pikachu artwork whose
+copyright is not owned by this project. The source remains available for study and
+personal builds, but do not redistribute a build containing those assets. Replace or
+remove them and review the relevant rights before any public distribution.
 
 ## Hardware
 
@@ -143,31 +142,97 @@ libusb is bundled. End users **do not need Homebrew, Swift, Xcode, or any other 
 - macOS 15 (Sequoia) or newer
 - Thermalright Trofeo Vision 9.16 LCD (the manual Preview still works without hardware)
 
-## Build from source
+## Build a standalone app from source
 
-Only source developers need a Swift toolchain, pkg-config, and libusb:
+These steps create a self-contained app, DMG, and ZIP that can be copied to another
+Apple Silicon Mac. The resulting app bundles libusb, so the target Mac does not need
+Homebrew, Swift, or Xcode.
+
+### 1. Prepare the build Mac
+
+- Apple Silicon Mac running macOS 15 or newer.
+- Xcode or Command Line Tools with Swift 6.1 support (Xcode 16.3 or newer is
+  recommended). If you use Command Line Tools only, verify that `swift`, `xcrun`,
+  `clang`, `make`, `codesign`, `hdiutil`, and `iconutil` are available.
+- `pkg-config` from [Homebrew](https://brew.sh/). The packaging script downloads and
+  builds pinned libusb 1.0.30 itself; Homebrew libusb is not a runtime dependency.
 
 ```bash
-brew install libusb pkg-config
+xcode-select --install                 # macOS reports if it is already installed
+brew install pkg-config
 
-git clone https://github.com/luckykong/mac-thermalright-ai-monitor.git
-cd mac-thermalright-ai-monitor
-swift build -c release
-
-.build/release/MacTR          # menu-bar app; drives the LCD or stays quietly in the menu bar
+swift --version
+xcrun --sdk macosx --show-sdk-path
+pkg-config --version
 ```
 
-> If your Command Line Tools are broken and `swift build` fails on the package manifest,
-> install the Homebrew Swift toolchain (`brew install swift`) and use
-> `/opt/homebrew/opt/swift/bin/swift build -c release`.
+### 2. Get the source
 
 ```bash
+git clone https://github.com/luckykong/mac-thermalright-ai-monitor.git
+cd mac-thermalright-ai-monitor
+git checkout main
+```
+
+### 3. Build the standalone packages
+
+```bash
+chmod +x packaging/build-release.sh
 ./packaging/build-release.sh
 ```
 
-The release script verifies and builds pinned libusb 1.0.30 from source, then creates
-a self-contained app, ad-hoc signature, DMG, ZIP, and `SHA256SUMS.txt` under
-`dist/v1.4.1/`.
+The script:
+
+1. Downloads libusb 1.0.30 source and verifies its pinned SHA-256.
+2. Builds libusb and MacTR for arm64 with macOS 15 as the deployment target.
+3. Creates `MacTR.app` with bundled libusb and license files.
+4. Removes Homebrew, SwiftPM cache, and development-machine absolute dependencies.
+5. Ad-hoc signs the app and creates a DMG, ZIP, and checksum file.
+
+Main outputs:
+
+```text
+.build/release-package/MacTR.app
+dist/v1.4.1/MacTR-v1.4.1-macos-arm64.dmg
+dist/v1.4.1/MacTR-v1.4.1-macos-arm64.zip
+dist/v1.4.1/SHA256SUMS.txt
+```
+
+### 4. Verify the packages
+
+```bash
+codesign --verify --deep --strict --verbose=2 \
+  .build/release-package/MacTR.app
+
+otool -L .build/release-package/MacTR.app/Contents/MacOS/MacTR
+
+cd dist/v1.4.1
+shasum -a 256 -c SHA256SUMS.txt
+hdiutil verify MacTR-v1.4.1-macos-arm64.dmg
+```
+
+`otool -L` should not show `/opt/homebrew`, `.build`, or an absolute development-machine
+path.
+
+### 5. First launch on another Mac
+
+Open the DMG and drag `MacTR.app` to Applications, or unzip the ZIP and move the app.
+The local build is ad-hoc signed, not Developer ID notarized. On first launch,
+Control-click or right-click the app, choose **Open**, and confirm once. Do not disable
+Gatekeeper globally.
+
+### Quick development build
+
+For local development only, without a standalone app:
+
+```bash
+brew install libusb pkg-config
+swift build -c release
+.build/release/MacTR --preview
+```
+
+This quick build may depend on `/opt/homebrew` and should not be copied to another Mac.
+Use `packaging/build-release.sh` for a transferable private build.
 
 ## Modes
 
@@ -218,7 +283,7 @@ default browser when you choose it.
 
 ## License
 
-MacTR is available under the [MIT License](LICENSE). Release builds dynamically link
+MacTR is available under the [MIT License](LICENSE). Local packaged builds dynamically link
 libusb 1.0.30 (LGPL-2.1-or-later); its complete license and source information are bundled
 inside the app. Third-party artwork remains under its own terms.
 

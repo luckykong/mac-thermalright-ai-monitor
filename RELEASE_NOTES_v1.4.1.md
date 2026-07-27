@@ -1,5 +1,11 @@
 # MacTR v1.4.1
 
+> **Source-only distribution notice (2026-07-27):** Prebuilt DMG, ZIP, and checksum
+> attachments have been removed. This release now provides GitHub-generated source
+> archives only because the UI contains third-party decorative artwork. Build locally
+> for personal use by following the README; replace or remove those assets before any
+> public redistribution.
+
 This update makes the 1920×480 layout denser and more useful on a one-fan Mac mini,
 adds a scheduled custom-script card, fixes Apple Silicon fan reads, and substantially
 reduces the cost of the always-on renderer.
@@ -21,36 +27,20 @@ reduces the cost of the always-on renderer.
 - Runs use the current user, never overlap, time out automatically, and cap combined
   stdout/stderr at 8 KB. Select only scripts you trust.
 
-## Download / 下载
+## Build locally / 本地构建
 
-1. Requires an Apple Silicon Mac running macOS 15 or newer.
-2. Download the DMG (recommended), open it, and drag `MacTR.app` to Applications.
-3. The community build is ad-hoc signed and not Developer ID notarized. On first launch,
-   Control-click or right-click `MacTR.app`, choose **Open**, and confirm once.
-4. No Homebrew, Swift, Xcode, or separate libusb installation is required.
-
-中文：下载 DMG 后把 `MacTR.app` 拖入“应用程序”。本版本无 Apple Developer ID
-公证，首次启动请右键或按住 Control 点击 App，选择“打开”并确认一次。无需安装
-Homebrew、Swift、Xcode 或独立的 libusb。
-
-## Assets
-
-- `MacTR-v1.4.1-macos-arm64.dmg`
-- `MacTR-v1.4.1-macos-arm64.zip`
-- `SHA256SUMS.txt`
-
-## SHA-256
-
-```text
-8e09efe6f0ca25bd40c75c6b9afb94ba3668e87ca68998ee038aedfc862d5c0f  MacTR-v1.4.1-macos-arm64.dmg
-82067b2c49ee22ba0b69ea3ad46bf52d33259afe606186f6559a8c2a9bbc8b72  MacTR-v1.4.1-macos-arm64.zip
-```
-
-From the directory containing the downloads, verify with:
+No executable attachment is available from this Release. Clone the repository and run:
 
 ```bash
-shasum -a 256 -c SHA256SUMS.txt
+brew install pkg-config
+./packaging/build-release.sh
 ```
+
+See `README.md` or `README.en.md` for prerequisites, output paths, signature and
+dependency checks, and first-launch instructions.
+
+本 Release 不再提供可执行附件。请克隆仓库后按中英文 README 的“从源码打包
+独立 App”章节在本机生成私用安装包。
 
 ## Resource profile
 

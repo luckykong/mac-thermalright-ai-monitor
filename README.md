@@ -39,8 +39,8 @@ Agent 文本和自定义卡片使用脱敏示例。动画预览使用内置演�
 - **CPU** —— 占用率环形表、紧凑每核 P/E 柱状条、温度(经 IOHIDEventSystemClient,无需 sudo)、1 分钟负载。
 - **GPU** —— 设备、Renderer 与 Tiler 利用率、温度和显存占用。
 - **内存** —— 按内存压力着色的占用环，以及 Active/Wired/Compressed/Available 明细。
-- **网速** —— 所有非回环接口的实时 DOWN / UP 速度位于同一行，30 秒镜像趋势图也分别标出两种速度。
-- **风扇** —— Mac 内置风扇的 RPM 融合进时钟与 Bongo Cat 卡片；猫咪头顶的风扇图标会随 RPM 改变转速。单风扇 Mac 只显示一个读数，多风扇用 `×N` 汇总；`FANLESS` 与 `N/A` 含义不同。
+- **网速** —— 所有非回环接口的实时 DOWN / UP 速度位于同一行，30 秒镜像趋势图也分别标出两种速度。当前值和每根趋势柱会按速率分级：不高于 5 MB/s 保持方向色、超过 5 MB/s 变橙、超过 10 MB/s 变红。
+- **风扇** —— Mac 内置风扇的 RPM 融合进时钟与 Bongo Cat 卡片；小型转子与 RPM 在同一行显示，并随转速改变动画速度，不再贴近猫咪。单风扇 Mac 只显示一个读数，多风扇用 `×N` 汇总；`FANLESS` 与 `N/A` 含义不同。
 - **时钟** —— 大字号显示时间，同时保留日期、秒、运行时间和进程数。
 
 ### 🧩 自定义脚本卡片
@@ -92,19 +92,14 @@ Agent 文本和自定义卡片使用脱敏示例。动画预览使用内置演�
 
 <sub>菜单图来自正在运行的原生 `NSMenu`；设置图来自同一版 App 的真实 SwiftUI 界面。</sub>
 
-## 下载与安装
+## 发布方式
 
-从 [GitHub Releases](https://github.com/luckykong/mac-thermalright-ai-monitor/releases/tag/v1.4.1)
-下载以下任一文件：
+本仓库**不再公开提供预编译 App、DMG 或 ZIP**。GitHub Releases 只保留版本记录
+以及 GitHub 自动生成的源码压缩包；这些 `Source code` 文件不是可执行程序。
 
-- `MacTR-v1.4.1-macos-arm64.dmg` —— 推荐，打开后拖入“应用程序”。
-- `MacTR-v1.4.1-macos-arm64.zip` —— 解压后把 `MacTR.app` 放入“应用程序”。
-
-发布包已内置 libusb，普通用户**不需要 Homebrew、Swift、Xcode 或其他程序**。
-
-> 当前发布采用 ad-hoc 签名，没有 Apple Developer ID，无法完成 Apple 公证。
-> 第一次运行请按住 Control 点击或右键点击 `MacTR.app`，选择“打开”，再确认一次；
-> 此后可以正常双击启动。不要用关闭 Gatekeeper 的命令。
+原因是当前界面包含 Bongo Cat 与皮卡丘等第三方装饰素材，其美术版权不属于
+本项目。源码仍可用于学习和个人构建，但请不要直接重新分发包含这些素材的
+构建产物。需要公开分发时，应先替换或移除相关素材并自行核查授权。
 
 ## 硬件
 
@@ -121,30 +116,94 @@ Agent 文本和自定义卡片使用脱敏示例。动画预览使用内置演�
 - macOS 15(Sequoia)或更新
 - 利民 Trofeo Vision 9.16 LCD（不连接硬件时仍可手动打开本机预览）
 
-## 从源码构建
+## 从源码打包独立 App
 
-只有开发者从源码构建时才需要 Swift 工具链、pkg-config 和 libusb：
+以下步骤会在本机生成可复制到其他 Apple Silicon Mac 的独立 App、DMG 和 ZIP。
+最终 App 会内置 libusb；目标 Mac 不需要 Homebrew、Swift 或 Xcode。
+
+### 1. 准备构建环境
+
+- Apple Silicon Mac，macOS 15 或更新版本。
+- 支持 Swift 6.1 的 Xcode / Command Line Tools（建议 Xcode 16.3 或更新版本）；
+  只使用 Command Line Tools 时也要确保 `swift`、
+  `xcrun`、`clang`、`make`、`codesign`、`hdiutil` 和 `iconutil` 可用。
+- [Homebrew](https://brew.sh/) 提供的 `pkg-config`。打包脚本会自行下载并从
+  源码构建固定的 libusb 1.0.30，不使用 Homebrew 的 libusb 作为运行依赖。
 
 ```bash
-brew install libusb pkg-config
+xcode-select --install                 # 已安装时系统会提示
+brew install pkg-config
 
-git clone https://github.com/luckykong/mac-thermalright-ai-monitor.git
-cd mac-thermalright-ai-monitor
-swift build -c release
-
-.build/release/MacTR          # 菜单栏应用；没接 LCD 时保持后台，可手动开预览
+swift --version
+xcrun --sdk macosx --show-sdk-path
+pkg-config --version
 ```
 
-> 如果系统的 Command Line Tools 损坏、`swift build` 在解析包清单时报错,
-> 装 Homebrew 的 Swift 工具链(`brew install swift`),改用
-> `/opt/homebrew/opt/swift/bin/swift build -c release`。
+### 2. 获取源码
 
 ```bash
+git clone https://github.com/luckykong/mac-thermalright-ai-monitor.git
+cd mac-thermalright-ai-monitor
+git checkout main
+```
+
+### 3. 生成独立安装包
+
+```bash
+chmod +x packaging/build-release.sh
 ./packaging/build-release.sh
 ```
 
-该脚本会校验并从源码构建固定版本的 libusb 1.0.30，生成自包含 App、
-ad-hoc 签名、DMG、ZIP 和 `SHA256SUMS.txt`，输出到 `dist/v1.4.1/`。
+脚本会依次完成：
+
+1. 下载 libusb 1.0.30 源码并核对固定 SHA-256。
+2. 以 macOS 15、arm64 为目标编译 libusb 和 MacTR。
+3. 创建完整的 `MacTR.app`，把 libusb 和许可文件放入 App。
+4. 清除 Homebrew、SwiftPM 缓存及开发机绝对路径依赖。
+5. 对 App 做 ad-hoc 签名，生成 DMG、ZIP 和校验文件。
+
+主要输出：
+
+```text
+.build/release-package/MacTR.app
+dist/v1.4.1/MacTR-v1.4.1-macos-arm64.dmg
+dist/v1.4.1/MacTR-v1.4.1-macos-arm64.zip
+dist/v1.4.1/SHA256SUMS.txt
+```
+
+### 4. 验证产物
+
+```bash
+codesign --verify --deep --strict --verbose=2 \
+  .build/release-package/MacTR.app
+
+otool -L .build/release-package/MacTR.app/Contents/MacOS/MacTR
+
+cd dist/v1.4.1
+shasum -a 256 -c SHA256SUMS.txt
+hdiutil verify MacTR-v1.4.1-macos-arm64.dmg
+```
+
+`otool -L` 的结果中不应出现 `/opt/homebrew`、`.build` 或开发机绝对路径。
+
+### 5. 在另一台 Mac 上首次运行
+
+打开 DMG 并把 `MacTR.app` 拖入“应用程序”，或解压 ZIP 后移动 App。当前构建
+只有 ad-hoc 签名，没有 Apple Developer ID 公证；首次启动请按住 Control
+点击或右键点击 App，选择“打开”并确认一次。不要全局关闭 Gatekeeper。
+
+### 快速调试构建
+
+只在当前开发机调试、无需生成独立 App 时，可以使用 Homebrew 的 libusb：
+
+```bash
+brew install libusb pkg-config
+swift build -c release
+.build/release/MacTR --preview
+```
+
+这个快速构建可能依赖 `/opt/homebrew`，不能直接复制给其他 Mac；跨设备使用请
+运行上面的 `packaging/build-release.sh`。
 
 ## 运行模式
 
@@ -190,7 +249,7 @@ Token 总量按本地自然日统计;某个 agent 今天还没跑过时,面板�
 
 ## 许可证
 
-MacTR 使用 [MIT License](LICENSE)。发布包动态链接 libusb 1.0.30
+MacTR 使用 [MIT License](LICENSE)。本地打包产物动态链接 libusb 1.0.30
 （LGPL-2.1-or-later），完整许可和来源信息已包含在 App 内。
 第三方素材各自遵循其自身条款。
 

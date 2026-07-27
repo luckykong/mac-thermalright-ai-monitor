@@ -2,6 +2,17 @@
 
 All notable changes to MacTR are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- Moved the animated fan rotor beside the RPM label so it no longer crowds Bongo Cat.
+- Added per-sample network rate colors: normal direction colors through 5 MB/s,
+  orange above 5 MB/s, and red above 10 MB/s.
+- Removed all prebuilt DMG, ZIP, and checksum attachments from public Releases.
+  Releases are source-only; the README now documents the complete local standalone
+  packaging and verification workflow.
+
 ## [1.4.1] - 2026-07-27
 
 ### Added

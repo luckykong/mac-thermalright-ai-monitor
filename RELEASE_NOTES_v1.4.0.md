@@ -1,7 +1,13 @@
 # MacTR v1.4.0
 
-MacTR is now a self-contained macOS menu-bar app: download, move it to Applications,
-and run it without Homebrew, Swift, Xcode, or a separate libusb installation.
+> **Source-only distribution notice (2026-07-27):** Prebuilt DMG, ZIP, and checksum
+> attachments have been removed. This release now provides GitHub-generated source
+> archives only because the UI contains third-party decorative artwork. Build locally
+> for personal use by following the README; replace or remove those assets before any
+> public redistribution.
+
+MacTR can be built as a self-contained macOS menu-bar app that runs on the target Mac
+without Homebrew, Swift, Xcode, or a separate libusb installation.
 
 ## Highlights
 
@@ -10,40 +16,20 @@ and run it without Homebrew, Swift, Xcode, or a separate libusb installation.
 - Persistent menu-bar settings, native Launch at Login, and quiet background operation.
 - Daily pause/resume schedules with overnight ranges and sleep/wake handling.
 - Optional scheduled full-app quit, plus immediate pause/resume from the menu.
-- Bundled source-built libusb 1.0.30, App icon, DMG, ZIP, and SHA-256 checksums.
+- Local packaging script for bundled source-built libusb 1.0.30, App icon, DMG, ZIP,
+  and SHA-256 checksums.
 
-## 下载 / Install
+## 本地构建 / Build locally
 
 **中文**
 
-1. Apple Silicon Mac 需运行 macOS 15 或更新版本。
-2. 推荐下载 DMG，打开后把 `MacTR.app` 拖入“应用程序”。
-3. 本版本没有 Apple Developer ID 公证。首次运行请右键或按住 Control 点击
-   `MacTR.app`，选择“打开”并确认；之后可以正常双击启动。
-4. App 驻留菜单栏，可在那里设置开机自启、每日关闭/开启时间和关闭动作。
+本 Release 不再提供可执行附件。请克隆仓库后按 `README.md` 的“从源码打包
+独立 App”章节在本机生成私用安装包。
 
 **English**
 
-1. Requires an Apple Silicon Mac running macOS 15 or newer.
-2. Download the DMG (recommended), open it, and drag `MacTR.app` to Applications.
-3. This build is not Developer ID notarized. On first launch, Control-click or
-   right-click the app and choose **Open**; normal double-click launch works afterward.
-4. Use the menu-bar display icon for Launch at Login, daily schedule, and output controls.
-
-## Assets
-
-- `MacTR-v1.4.0-macos-arm64.dmg`
-- `MacTR-v1.4.0-macos-arm64.zip`
-- `SHA256SUMS.txt`
-
-## SHA-256
-
-```text
-8ce125659b339745ee8c5fb82ab8f94ff06f98d1e06d22096a3a53faed3a4cb8  MacTR-v1.4.0-macos-arm64.dmg
-3f022c2bad0be8338b7a53f1958f1e70d2c2b1739a4a87cc7e67f05110c4afa2  MacTR-v1.4.0-macos-arm64.zip
-```
-
-The same values are included in the attached `SHA256SUMS.txt`.
+No executable attachment is available from this Release. Follow “Build a standalone
+app from source” in `README.en.md` to create a private local package.
 
 ## Notes
 

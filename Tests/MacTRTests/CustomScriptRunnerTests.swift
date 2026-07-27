@@ -96,6 +96,70 @@ struct CustomScriptRunnerTests {
         #expect(result.exitCode == 0)
     }
 
+    /// stdout and stderr used to share one pipe, so a stray warning — or an
+    /// exception carrying an API key — was spliced into the text rendered on
+    /// the physical panel.
+    @Test("Card text ignores whatever the script writes to stderr")
+    func stderrStaysOutOfCardOutput() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = directory.appendingPathComponent("noisy.sh")
+        try Data("""
+            #!/bin/zsh
+            print -u2 'WARNING: key=hunter2 leaked into diagnostics'
+            printf 'STATUS  OK\\n'
+            print -u2 'another line of noise'
+            """.utf8).write(to: script)
+
+        let runner = CustomScriptRunner()
+        runner.start(configuration: CustomScriptConfiguration(
+            enabled: true, path: script.path,
+            displayName: "Noisy", intervalSeconds: 60))
+        defer { runner.stop() }
+
+        var result = runner.currentSnapshot()
+        for _ in 0..<80 where result.state != .succeeded {
+            try await Task.sleep(for: .milliseconds(25))
+            result = runner.currentSnapshot()
+        }
+        #expect(result.state == .succeeded)
+        #expect(result.output == "STATUS  OK")
+        #expect(!result.output.contains("hunter2"))
+    }
+
+    @Test("A failing script reports its stderr as the error message")
+    func failureMessageComesFromStderr() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = directory.appendingPathComponent("failing.sh")
+        try Data("""
+            #!/bin/zsh
+            print -u2 'upstream unreachable'
+            exit 3
+            """.utf8).write(to: script)
+
+        let runner = CustomScriptRunner()
+        runner.start(configuration: CustomScriptConfiguration(
+            enabled: true, path: script.path,
+            displayName: "Failing", intervalSeconds: 60))
+        defer { runner.stop() }
+
+        var result = runner.currentSnapshot()
+        for _ in 0..<80 where result.state != .failed {
+            try await Task.sleep(for: .milliseconds(25))
+            result = runner.currentSnapshot()
+        }
+        #expect(result.state == .failed)
+        #expect(result.exitCode == 3)
+        #expect(result.message == "upstream unreachable")
+    }
+
     @Test("Intervals clamp to the supported range")
     func intervalClamping() {
         let tooFast = CustomScriptConfiguration(

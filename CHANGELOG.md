@@ -2,7 +2,47 @@
 
 All notable changes to MacTR are documented here.
 
-## [Unreleased]
+## [1.4.2] - 2026-07-28
+
+### Fixed
+
+- Fixed reconnect building an unbounded call stack. `connectAndRun` and
+  `runFrameLoop` called each other, so every reconnect cycle pushed two stack
+  frames that never unwound; reconnection is now a loop with 5–60 s exponential
+  backoff.
+- Fixed a data race on the engine's `enabled`/`running` flags, which were plain
+  `Bool`s written from the main thread, the USB queue and the IOKit hotplug
+  queue. They are atomic now, and the remaining unsynchronised hotplug work
+  moved onto the USB queue.
+- Fixed a device conflict being reported as `Failed to set configuration
+  (code -4)`. On macOS an exclusive-access conflict surfaces at
+  `libusb_set_configuration`, not at `libusb_claim_interface`, so the friendly
+  "device in use by another application" message was unreachable.
+- Fixed `USBHotplug` leaking IOKit notification iterators: both product IDs
+  shared one pair of variables, so every registration but the last leaked and
+  could not be deregistered.
+- Fixed the frame sender advancing its cursor by a fixed 4096 bytes rather than
+  the number of bytes actually written, and enforced the previously unused
+  650 KB frame limit.
+- Fixed `JPEGEncoder`'s `rotate` parameter, whose name, default value and
+  documentation all contradicted its `if !rotate { …rotate… }` implementation.
+  It is now `rotate180`, and the handshake's `needsRotation` — parsed since
+  1.0 but never read — is finally used.
+- Fixed custom-card output being contaminated by the script's stderr. The two
+  streams shared one pipe, so warnings and exception text (potentially
+  including credentials) were rendered on the LCD.
+- Fixed the app querying `SMAppService` once per second from a menu-refresh
+  timer, even with the menu closed.
+- Fixed application logs being unretrievable: they were emitted at `.info`,
+  which is not persisted, and `--cli` produced no terminal output at all.
+- Fixed `swift test` being unrunnable without a full Xcode install; use
+  `./scripts/test.sh`.
+- Fixed the version number being duplicated across six locations that had
+  drifted apart. `Info.plist` is now the only source.
+- Fixed the dot-weather example hardcoding the author's personal paths,
+  requiring a separate unpublished project even for `--sample`, falling back to
+  an unboundedly stale cache, leaving requests without a timeout, and printing
+  API keys into failure messages.
 
 ### Added
 

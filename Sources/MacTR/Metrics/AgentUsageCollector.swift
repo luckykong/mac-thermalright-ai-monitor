@@ -84,7 +84,7 @@ final class AgentUsageCollector: @unchecked Sendable {
 
     private let fm = FileManager.default
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
-    private let claudeQuota = ClaudeQuotaReader()
+    private let claudeQuota = ClaudeUsageFetcher()
 
     // Incremental state, reset on day rollover
     private var dayKey = ""

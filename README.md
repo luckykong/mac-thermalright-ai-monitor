@@ -22,7 +22,7 @@
 ## 亮点
 
 ### 🤖 AI Agents 面板
-读取**本地**的 Claude Code 和 Codex 会话日志(只读、不联网),左右并排显示每个 agent 的:
+读取**本地**的 Claude Code 和 Codex 会话日志(只读),左右并排显示每个 agent 的:
 
 - **当前项目**和**它最后说的话** —— 消息里的 Markdown 表格会被渲染成对齐的表格,而不是原始的 `| … |` 文本。
 - **计划 / 步骤进度** —— `步骤 4/6` 徽章 + 分段进度条,从 Codex 的 `update_plan` 和 Claude 的 `TodoWrite` 解析而来。上一轮已完成的旧计划会自动消失。
@@ -242,7 +242,8 @@ Xcode，脚本会跳过这些参数直接调用 `swift test`。
 
 ## Agent 数据怎么读取
 
-MacTR 从不访问任何网络或 API,只读取这些 CLI 本来就写到本地磁盘的会话记录:
+除了下面单独说明的 Claude 额度查询外,MacTR 不访问网络,只读取这些 CLI 本来就写到
+本地磁盘的会话记录:
 
 | Agent | 来源 | 解析内容 |
 |---|---|---|
@@ -251,45 +252,32 @@ MacTR 从不访问任何网络或 API,只读取这些 CLI 本来就写到本地�
 
 Token 总量按本地自然日统计;某个 agent 今天还没跑过时,面板会优雅地显示它上一次会话的上下文。
 
-### 为什么 Claude 的剩余额度要额外配置
+### Claude 剩余额度:唯一的一次联网
 
 Codex 把 `rate_limits.primary`(已用百分比 + 重置时间)写进**每一条** rollout 日志,
 所以 MacTR 顺手就能读到。Claude Code 不把限额信息写到磁盘任何地方 ——
-`~/.claude/projects`、`stats-cache.json`、`sessions/` 里都没有。唯一的来源是带
-OAuth token 请求 Anthropic 的用量接口。
+`~/.claude/projects`、`stats-cache.json`、`sessions/` 里都没有。唯一的来源就是
+带 OAuth token 请求 `https://api.anthropic.com/api/oauth/usage`。
 
-MacTR 不做这件事,原因有两个:一是它会打破“完全不联网”这个定位;二是那个 token
-存在 `Claude Code-credentials` 这个 Keychain 项里,**刷新它会轮换共享的 refresh
-token,把 Claude Code 本身登出**。
+MacTR 因此会做**这一个**网络请求,并排显示 5 小时与 7 天两个窗口。具体行为:
 
-所以 MacTR 改为读取一个由你自己的工具写好的缓存文件:
+- token 从 Keychain 里 Claude Code 自己那一项(`Claude Code-credentials`)读取,
+  走 `/usr/bin/security`。首次会弹出钥匙串授权,点“始终允许”即可。
+- **绝不刷新 token。** 那一项里的 refresh token 是和 Claude Code 共用的,轮换它
+  会把 Claude Code 登出。access token 过期时额度条直接消失,等你下次正常使用
+  Claude Code 时它自己会续期。
+- 最快 5 分钟请求一次;失败后退避到 15 分钟。请求在后台线程,不阻塞指标采集。
+- 请求只发出 token,不携带任何会话内容、项目名或本机信息。
 
-```bash
-# 默认位置
-~/.cache/mactr/claude-usage.json
-
-# 或指向已有的缓存
-defaults write com.beret21.MacTR claudeUsageCachePath /path/to/usage_cache.json
-```
-
-支持两种结构 —— 顶层直接放窗口,或嵌套在 `providers.claude.data` 下
-(与 `token-usage-dash` 的 `usage_cache.json` 兼容,可直接软链过去):
-
-```json
-{
-  "fetched_at": "2026-07-28T04:00:00Z",
-  "five_hour": { "utilization": 22.0, "resets_at": "2026-07-28T08:20:00Z" },
-  "seven_day": { "utilization":  9.0, "resets_at": "2026-08-01T20:00:00Z" }
-}
-```
-
-`utilization` 是已用百分比。某个窗口的 `resets_at` 一旦过期就不再显示 ——
-绝对时间戳过期就说明旁边那个百分比早已归零;整份缓存超过 12 小时也会整体忽略。
+不想要这个请求的话,把钥匙串授权拒绝掉即可 —— 额度条不显示,其余功能不受影响。
 
 ## 隐私
 
-指标与 Agent 会话读取全部在本地、只读。无遥测，也不会上传任何数据；
-“查看最新版本”只会按你的操作在默认浏览器中打开本仓库 Releases 页面。
+指标与 Agent 会话读取全部在本地、只读。无遥测,不上传任何使用数据。
+
+唯一的出站请求是上面说明的 Claude 额度查询:只发送你本机 Claude Code 已有的
+OAuth token,用于换取你自己的用量百分比。“查看最新版本”则只会按你的操作在默认
+浏览器中打开本仓库 Releases 页面。
 
 ## 致谢
 

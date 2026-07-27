@@ -25,7 +25,7 @@ and Preview window use the same 1920×480 rendering path.</sub>
 ## Highlights
 
 ### 🤖 AI Agents panel
-Reads your **local** Claude Code and Codex session logs (read-only, no network) and shows,
+Reads your **local** Claude Code and Codex session logs (read-only) and shows,
 for each agent, side by side:
 
 - **Current project** and the **last thing it said** — Markdown tables in the message are
@@ -34,7 +34,9 @@ for each agent, side by side:
   Codex `update_plan` and Claude `TodoWrite`. Stale plans from a finished turn disappear.
 - **Today's token usage** — total + In/Out, using compact `万 / 亿` in Chinese and
   K / M / B in English.
-- **Codex remaining quota** — % left + reset countdown, tracked across all recent sessions.
+- **Remaining quota** — % left + reset countdown. Codex comes straight from `rate_limits`
+  in its session logs; Claude shows its 5-hour and 7-day windows side by side, from the
+  one network request described below.
 - **Live status** — the column **breathes** while an agent is working and **flashes** for
   ~10 s when it finishes a turn or needs your input.
 
@@ -262,8 +264,8 @@ using `--demo` / `--benchmark`.
 
 ## How agent data is read
 
-MacTR never talks to any network or API. It only reads local session transcripts that the
-CLIs already write to disk:
+Apart from the single Claude quota request described below, MacTR does not use the
+network. It reads the local session transcripts the CLIs already write to disk:
 
 | Agent | Source | What's parsed |
 |---|---|---|
@@ -273,10 +275,36 @@ CLIs already write to disk:
 Token totals are scoped to the local day; the panel gracefully shows the last session's
 context when an agent hasn't run yet today.
 
+### Claude quota: the one network request
+
+Codex writes `rate_limits.primary` (percent used + reset time) into **every** rollout
+line, so MacTR gets its quota for free. Claude Code persists no such thing anywhere on
+disk — not in `~/.claude/projects`, `stats-cache.json` or `sessions/`. The only source is
+an authenticated `GET https://api.anthropic.com/api/oauth/usage`.
+
+MacTR makes that **one** request and shows the 5-hour and 7-day windows side by side:
+
+- The token comes from Claude Code's own keychain item (`Claude Code-credentials`) via
+  `/usr/bin/security`. macOS asks for permission the first time; choose "Always Allow".
+- **It never refreshes the token.** The refresh token in that item is shared with Claude
+  Code, and rotating it signs Claude Code out. When the access token expires the quota
+  bars simply disappear until Claude Code renews it during normal use.
+- At most one request every 5 minutes, backing off to 15 after a failure. It runs on a
+  background thread and never blocks metrics collection.
+- The request carries only the token — no transcript content, project names or machine
+  details.
+
+Deny the keychain prompt if you would rather not have it: the quota bars stay empty and
+nothing else changes.
+
 ## Privacy
 
-Metrics and agent transcripts stay local and read-only. There is no telemetry and nothing
-is uploaded. “View Latest Release” only opens this repository’s Releases page in your
+Metrics and agent transcripts stay local and read-only. There is no telemetry and no
+usage data is uploaded.
+
+The only outbound request is the Claude quota lookup described above: it sends the OAuth
+token Claude Code already holds on this machine, in exchange for your own usage
+percentages. “View Latest Release” only opens this repository’s Releases page in your
 default browser when you choose it.
 
 ## Credits

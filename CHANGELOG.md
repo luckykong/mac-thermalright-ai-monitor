@@ -4,7 +4,24 @@ All notable changes to MacTR are documented here.
 
 ## [1.4.2] - 2026-07-28
 
+### Added
+
+- Added Claude rate-limit windows to the AI Agents panel. The quota bar was never
+  Codex-specific in the renderer, but Claude Code persists no rate-limit data on disk,
+  so nothing supplied it. MacTR now makes one authenticated request to Anthropic's
+  OAuth usage endpoint and shows the 5-hour and 7-day windows side by side. The token
+  is read from Claude Code's own keychain item and **never refreshed** — the refresh
+  token there is shared with Claude Code and rotating it would sign it out. This is the
+  only network request MacTR makes; see the README for how to opt out.
+- Enlarged both mascots. Pikachu goes from 49 to 66 pt and Bongo Cat from 0.54 to 0.78
+  scale, and image drawing now requests high interpolation quality. At the old size the
+  170 px Pikachu sprite lost its red cheeks and black outlines to downscaling and read
+  as a pale yellow blob.
+
 ### Fixed
+
+- Fixed the quota reset countdown mixing languages: the split two-window layout fell
+  back to a bare "3h"/"4d" while Codex showed "5 天后重置" in the same panel.
 
 - Fixed reconnect building an unbounded call stack. `connectAndRun` and
   `runFrameLoop` called each other, so every reconnect cycle pushed two stack

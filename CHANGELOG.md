@@ -17,6 +17,24 @@ All notable changes to MacTR are documented here.
   scale, and image drawing now requests high interpolation quality. At the old size the
   170 px Pikachu sprite lost its red cheeks and black outlines to downscaling and read
   as a pale yellow blob.
+- Added a persistent runtime language picker for Simplified Chinese and English.
+  Simplified Chinese is the first-run default, and both Settings and the menu bar
+  can switch the entire app and LCD dashboard without restarting.
+- Added localized runtime/device states, daily-schedule descriptions, dashboard
+  labels, time units, and language-specific compact token formats.
+- Added persistent Auto / Small / Medium / Large custom-card text sizing. Auto
+  selects the largest fully fitting font, vertically centers short output, uses
+  a large centered treatment for six-digit codes, and safely scales or truncates
+  long text.
+
+### Changed
+
+- Moved the animated fan rotor beside the RPM label so it no longer crowds Bongo Cat.
+- Added per-sample network rate colors: normal direction colors through 5 MB/s,
+  orange above 5 MB/s, and red above 10 MB/s.
+- Removed all prebuilt DMG, ZIP, and checksum attachments from public Releases.
+  Releases are source-only; the README now documents the complete local standalone
+  packaging and verification workflow.
 
 ### Fixed
 
@@ -30,7 +48,6 @@ All notable changes to MacTR are documented here.
   preview window never ran this pass, which is why only the panel looked faded.
 - Fixed the quota reset countdown mixing languages: the split two-window layout fell
   back to a bare "3h"/"4d" while Codex showed "5 天后重置" in the same panel.
-
 - Fixed reconnect building an unbounded call stack. `connectAndRun` and
   `runFrameLoop` called each other, so every reconnect cycle pushed two stack
   frames that never unwound; reconnection is now a loop with 5–60 s exponential
@@ -68,27 +85,6 @@ All notable changes to MacTR are documented here.
   requiring a separate unpublished project even for `--sample`, falling back to
   an unboundedly stale cache, leaving requests without a timeout, and printing
   API keys into failure messages.
-
-### Added
-
-- Added a persistent runtime language picker for Simplified Chinese and English.
-  Simplified Chinese is the first-run default, and both Settings and the menu bar
-  can switch the entire app and LCD dashboard without restarting.
-- Added localized runtime/device states, daily-schedule descriptions, dashboard
-  labels, time units, and language-specific compact token formats.
-- Added persistent Auto / Small / Medium / Large custom-card text sizing. Auto
-  selects the largest fully fitting font, vertically centers short output, uses
-  a large centered treatment for six-digit codes, and safely scales or truncates
-  long text.
-
-### Changed
-
-- Moved the animated fan rotor beside the RPM label so it no longer crowds Bongo Cat.
-- Added per-sample network rate colors: normal direction colors through 5 MB/s,
-  orange above 5 MB/s, and red above 10 MB/s.
-- Removed all prebuilt DMG, ZIP, and checksum attachments from public Releases.
-  Releases are source-only; the README now documents the complete local standalone
-  packaging and verification workflow.
 
 ## [1.4.1] - 2026-07-27
 

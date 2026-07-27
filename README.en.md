@@ -3,21 +3,20 @@
 [中文](README.md) · [English](README.en.md)
 
 <p align="center">
-  <img src="img/app-icon-v1.4.0.png" width="112" alt="MacTR app icon">
+  <img src="img/app-icon-v1.4.1.png" width="112" alt="MacTR app icon">
 </p>
 
 Turn the 1920×480 LCD on your Thermalright CPU cooler into a live dashboard that shows
 your Mac's vitals **and what your AI coding agents are doing right now** — all native on
 macOS, no Windows required.
 
-![On real hardware](img/photo.jpg)
-
-<sub>Running on a Thermalright Trofeo Vision 9.16 cooler.</sub>
+![MacTR 1920×480 dashboard screenshot](img/dashboard.png)
 
 ![Dashboard](img/dashboard.gif)
 
-<sub>Live demo (fake data). CPU, GPU, memory, network and fans are visible on the left;
-both agents "working" → columns breathe, Bongo Cat types and Pikachu crackles.</sub>
+<sub>The static frame comes from the current renderer with system metrics from the
+connected Mac. Agent text and the custom card use redacted examples; the animated
+preview uses the built-in showcase dataset.</sub>
 
 > Fork of [beret21/MacTR](https://github.com/beret21/MacTR), reworked around a central
 > **AI Agents** panel that tracks [Claude Code](https://claude.com/claude-code) and
@@ -39,14 +38,30 @@ for each agent, side by side:
   ~10 s when it finishes a turn or needs your input.
 
 ### 🖥️ System panels
+
+The left side now uses a non-equal grid: CPU / GPU / Memory above Network / Custom
+Card / Clock + Fan. Time is more prominent, while the Claude and Codex columns are
+narrower without removing project, message, step, token, or quota details.
+
 - **CPU** — usage arc gauge, compact per-core P/E bars, temperature (via
   IOHIDEventSystemClient, no sudo), and 1-minute load.
 - **GPU** — device, renderer and tiler utilization, temperature and allocated memory.
 - **Memory** — pressure-colored usage gauge plus Active/Wired/Compressed/Available details.
-- **Network** — live download/upload rates across non-loopback interfaces with a 30-second trend.
-- **Fans** — live RPM and percentage of maximum speed for built-in Mac fans, with distinct
-  fanless and unavailable states.
-- The bottom system card also keeps the date, clock, uptime and process count.
+- **Network** — live DOWN and UP rates share one row; both rates are also called out
+  inside the mirrored 30-second trend graph.
+- **Fans** — built-in fan RPM is integrated into the clock/Bongo Cat card. The rotor
+  above the cat accelerates with RPM. A one-fan Mac shows one reading; multi-fan Macs
+  use `×N`; `FANLESS` and `N/A` remain distinct.
+- **Clock** — large time, plus date, seconds, uptime, and process count.
+
+### 🧩 Custom script card
+
+- Choose a script, card title, and a repeat interval from 5 seconds to 24 hours.
+- `.sh`, `.zsh`, and `.command` files run through `/bin/zsh`; other files require
+  execute permission and a valid shebang.
+- The card displays plain-text stdout/stderr only, capped at 8 KB with ANSI controls removed.
+- Runs never overlap and time out automatically. A failure keeps the last successful
+  output visible alongside the error state.
 
 ### 🐱⚡ Desk pets that react to activity
 - A **Bongo Cat** taps its keyboard while your agents work (and dozes when idle).
@@ -54,13 +69,29 @@ for each agent, side by side:
   turns while an agent is running.
 
 ### ⚙️ Under the hood
-- **Adaptive frame rate** — the LCD runs at ~15 fps only while something is animating
-  (agent working, heavy CPU); otherwise it idles at 2 fps to save power.
+- **Three performance modes** — Balanced is the always-on default; Eco reduces work
+  further, while Smooth trades CPU for more fluid animation. Metric cadence follows the mode.
+- **Low-resource rendering** — reuses the 1920×480 raster and preview frame, applies
+  brightness through an optimized C lookup table, and throttles status updates and
+  local agent-log scans instead of accumulating per-frame work.
 - **USB hotplug** — auto-reconnect on plug/unplug and sleep/wake.
 - **On-Mac preview** — open it from the menu at any time, or opt into showing it
   automatically while the LCD is disconnected.
 - **Menu bar app** — runs in the background with no Dock icon; closing Preview or
   Settings does not quit it.
+
+Performance modes trade animation smoothness and metric freshness for resource use.
+The USB output remains 1920×480 in every mode.
+
+| Mode | Active-agent animation | Idle refresh | Best for |
+|---|---:|---:|---|
+| Eco | up to 2 fps | as slow as 2 s/frame | lowest always-on cost |
+| Balanced (default) | up to 4 fps | as slow as 1 s/frame | long-running use |
+| Smooth | up to 10 fps | as slow as 0.5 s/frame | smoother pets and rotor |
+
+With the LCD connected on the development Mac, Balanced settled around 47–54 MB
+physical memory, 10 threads, and roughly 8% CPU while an agent was active. Hardware,
+log size, and telemetry availability affect the result.
 
 ### 🕘 Menu bar, login launch, and daily scheduling
 
@@ -74,18 +105,21 @@ for each agent, side by side:
 
 <table>
   <tr>
-    <td width="36%"><img src="img/menu-bar-v1.4.0.png" alt="MacTR menu-bar controls"></td>
-    <td width="64%"><img src="img/settings-v1.4.0.png" alt="MacTR settings and daily schedule"></td>
+    <td width="36%"><img src="img/menu-bar-v1.4.1.png" alt="MacTR native menu-bar controls"></td>
+    <td width="64%"><img src="img/settings-v1.4.1.png" alt="MacTR settings and custom card"></td>
   </tr>
 </table>
+
+<sub>The menu image is captured from the running native `NSMenu`; the Settings image
+is the real SwiftUI interface from the same build.</sub>
 
 ## Download & install
 
 Download either artifact from
-[GitHub Releases](https://github.com/luckykong/mac-thermalright-ai-monitor/releases/tag/v1.4.0):
+[GitHub Releases](https://github.com/luckykong/mac-thermalright-ai-monitor/releases/tag/v1.4.1):
 
-- `MacTR-v1.4.0-macos-arm64.dmg` — recommended; open it and drag MacTR to Applications.
-- `MacTR-v1.4.0-macos-arm64.zip` — unzip and move `MacTR.app` to Applications.
+- `MacTR-v1.4.1-macos-arm64.dmg` — recommended; open it and drag MacTR to Applications.
+- `MacTR-v1.4.1-macos-arm64.zip` — unzip and move `MacTR.app` to Applications.
 
 libusb is bundled. End users **do not need Homebrew, Swift, Xcode, or any other runtime**.
 
@@ -133,17 +167,19 @@ swift build -c release
 
 The release script verifies and builds pinned libusb 1.0.30 from source, then creates
 a self-contained app, ad-hoc signature, DMG, ZIP, and `SHA256SUMS.txt` under
-`dist/v1.4.0/`.
+`dist/v1.4.1/`.
 
 ## Modes
 
 ```bash
 .build/release/MacTR                 # menu-bar app (LCD, or quiet background mode without it)
 .build/release/MacTR --preview       # force the on-Mac preview window
-.build/release/MacTR --demo          # drive the LCD with polished fake data (for photos)
+.build/release/MacTR --demo          # drive the LCD with the built-in showcase dataset
 .build/release/MacTR --snapshot x.png --cores 10   # render one demo frame to a PNG
+.build/release/MacTR --snapshot x.png --redact-agents   # real metrics + redacted session text
 .build/release/MacTR --gif x.gif --frames 48 --fps 12 --scale 2   # animated demo GIF
 .build/release/MacTR --benchmark 120 # measure achievable LCD frame rate
+.build/release/MacTR --smc-test      # diagnose built-in fan access
 ```
 
 Only one process can hold the USB device at a time — stop the running instance before

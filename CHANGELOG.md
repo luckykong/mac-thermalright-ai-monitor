@@ -2,6 +2,44 @@
 
 All notable changes to MacTR are documented here.
 
+## [1.4.1] - 2026-07-27
+
+### Added
+
+- A reusable custom script card with a user-selected path, title, and 5-second to
+  24-hour interval.
+- Safe launch rules: shell files run as one `/bin/zsh` path argument; all other
+  files require execute permission and a shebang. Output is plain text, capped,
+  sanitized, non-overlapping, and time-limited.
+- Eco, Balanced, and Smooth performance modes for explicit always-on tradeoffs.
+- SMC diagnostics for verifying built-in fan access on a target Mac.
+
+### Changed
+
+- Rebalanced the 1920×480 layout into three compact top system cards and a lower
+  Network / Custom / Clock + Fan row.
+- Made the clock more prominent and integrated fan RPM plus a speed-reactive rotor
+  above Bongo Cat, avoiding a mostly empty one-fan panel on Mac mini.
+- Put live DOWN and UP rates on one line and labeled both series inside the network graph.
+- Narrowed the Claude and Codex columns while retaining their full content.
+- Replaced stale documentation assets with captures from the actual renderer, native
+  menu, and settings interface.
+
+### Fixed and optimized
+
+- Corrected the AppleSMC C-ABI structure layout so fan keys read successfully on
+  Apple Silicon.
+- Replaced the retaining Core Image brightness path with reusable raster storage
+  and an optimized C lookup table.
+- Reused the frame sent to the LCD for Preview, throttled UI status delivery, reduced
+  local transcript scanning, and avoided large tail-file allocations.
+- Stopped metrics and USB work while output is paused or an absent LCD has no Preview.
+
+### Packaging
+
+- Standalone Apple Silicon DMG and ZIP remain self-contained with bundled libusb,
+  ad-hoc signing, and SHA-256 checksums.
+
 ## [1.4.0] - 2026-07-27
 
 ### Added
@@ -48,4 +86,5 @@ All notable changes to MacTR are documented here.
 - Matched Finder’s disk capacity accounting by including purgeable space.
 - Used memory pressure for memory severity and throttled disk polling.
 
+[1.4.1]: https://github.com/luckykong/mac-thermalright-ai-monitor/releases/tag/v1.4.1
 [1.4.0]: https://github.com/luckykong/mac-thermalright-ai-monitor/releases/tag/v1.4.0

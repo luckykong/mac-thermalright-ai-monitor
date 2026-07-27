@@ -3,18 +3,17 @@
 [中文](README.md) · [English](README.en.md)
 
 <p align="center">
-  <img src="img/app-icon-v1.4.0.png" width="112" alt="MacTR App 图标">
+  <img src="img/app-icon-v1.4.1.png" width="112" alt="MacTR App 图标">
 </p>
 
 把利民 CPU 散热器上的 1920×480 LCD 变成一块实时仪表盘,既显示 Mac 的系统状态,**又能看到你的 AI 编程助手此刻在干什么** —— 全部原生运行于 macOS,无需 Windows。
 
-![真机实拍](img/photo.jpg)
-
-<sub>装在利民 Trofeo Vision 9.16 散热器上的实拍效果。</sub>
+![MacTR 1920×480 仪表盘截图](img/dashboard.png)
 
 ![仪表盘](img/dashboard.gif)
 
-<sub>实时演示(假数据)。左侧显示 CPU、GPU、内存、网速与风扇；两个 agent 都在"工作"→ 面板呼吸、Bongo Cat 敲键盘、皮卡丘随 CPU 负载蹦跳放电。</sub>
+<sub>上图由当前渲染器输出：系统指标来自已连接的 Mac；为避免公开本地会话，
+Agent 文本和自定义卡片使用脱敏示例。动画预览使用内置演示数据。</sub>
 
 > 基于 [beret21/MacTR](https://github.com/beret21/MacTR) 改造,核心是一块实时追踪
 > [Claude Code](https://claude.com/claude-code) 与 [Codex](https://openai.com/codex)
@@ -32,22 +31,49 @@
 - **实时状态** —— agent 工作时该栏**缓慢呼吸**,完成一轮或需要你输入时**闪烁**约 10 秒提醒。
 
 ### 🖥️ 系统面板
+
+左侧采用非等分布局：上排是 CPU / GPU / 内存，下排是网速 / 自定义卡片 /
+时钟与风扇。日期和时间比旧版更醒目，AI Agents 区域适当收窄，但项目、
+消息、步骤、Token 和额度信息仍完整保留。
+
 - **CPU** —— 占用率环形表、紧凑每核 P/E 柱状条、温度(经 IOHIDEventSystemClient,无需 sudo)、1 分钟负载。
 - **GPU** —— 设备、Renderer 与 Tiler 利用率、温度和显存占用。
 - **内存** —— 按内存压力着色的占用环，以及 Active/Wired/Compressed/Available 明细。
-- **网速** —— 所有非回环接口的实时下载/上传速度与 30 秒趋势图。
-- **风扇** —— Mac 内置风扇的实时 RPM 和最高转速占比；无风扇机型与 SMC 不可用会分别显示。
-- 底部系统卡同时保留日期、时钟、开机时长和进程数。
+- **网速** —— 所有非回环接口的实时 DOWN / UP 速度位于同一行，30 秒镜像趋势图也分别标出两种速度。
+- **风扇** —— Mac 内置风扇的 RPM 融合进时钟与 Bongo Cat 卡片；猫咪头顶的风扇图标会随 RPM 改变转速。单风扇 Mac 只显示一个读数，多风扇用 `×N` 汇总；`FANLESS` 与 `N/A` 含义不同。
+- **时钟** —— 大字号显示时间，同时保留日期、秒、运行时间和进程数。
+
+### 🧩 自定义脚本卡片
+
+- 可在设置中选择脚本文件、自定义卡片名称，并设置 5 秒到 24 小时的循环间隔。
+- `.sh`、`.zsh` 和 `.command` 通过系统 `/bin/zsh` 运行；其他文件必须有可执行权限和有效 shebang。
+- 只显示纯文本 `stdout/stderr`；输出上限 8 KB，ANSI 控制序列会移除。
+- 同一个脚本不会重叠执行，并会按间隔自动设置超时；失败时保留上一次成功输出并显示状态。
 
 ### 🐱⚡ 会互动的桌宠
 - **Bongo Cat**:agent 工作时在键盘上啪嗒啪嗒敲字,空闲时打盹。
 - **皮卡丘**:CPU 负载越高电弧越猛;agent 运行时它还会蹦跳、左右转身。
 
 ### ⚙️ 底层
-- **自适应帧率** —— 只有在有动画时(agent 工作、CPU 高负载)LCD 才跑约 15fps,其余时间降到 2fps 省电。
+- **三档性能模式** —— `Balanced` 默认为常驻运行设计；`Eco` 进一步降低刷新，
+  `Smooth` 换取更流畅动画。各档会同时调整帧率和指标采集节奏。
+- **低资源渲染** —— 复用 1920×480 栅格和预览帧，亮度处理使用优化的 C 查找表，
+  状态更新与本地 Agent 日志扫描均有限流，不再为每帧堆积任务或图像缓存。
 - **USB 热插拔** —— 插拔、睡眠/唤醒后自动重连。
 - **本机预览** —— 可随时从菜单栏打开；也可选择在 LCD 断开时自动显示。
 - **菜单栏应用** —— 后台运行、无 Dock 图标，关闭预览和设置窗口不会退出。
+
+性能模式的主要取舍是动画流畅度和指标时效性；USB 输出分辨率始终保持
+1920×480，不会因节能而降低画质。
+
+| 模式 | Agent 活跃动画 | 空闲刷新 | 适用场景 |
+|---|---:|---:|---|
+| Eco | 最高 2 fps | 最慢约 2 秒/帧 | 最低常驻占用 |
+| Balanced（默认） | 最高 4 fps | 最慢约 1 秒/帧 | 长时间常驻 |
+| Smooth | 最高 10 fps | 最慢约 0.5 秒/帧 | 更流畅的桌宠和风扇动画 |
+
+在本次连接设备的实测中，Balanced 在 Agent 活跃时稳定约为 47–54 MB 物理内存、
+10 个线程和约 8% CPU；不同 Mac、日志规模和采集状态会有差异。
 
 ### 🕘 菜单栏、开机自启与定时
 
@@ -59,18 +85,20 @@
 
 <table>
   <tr>
-    <td width="36%"><img src="img/menu-bar-v1.4.0.png" alt="MacTR 菜单栏控制"></td>
-    <td width="64%"><img src="img/settings-v1.4.0.png" alt="MacTR 设置与每日计划"></td>
+    <td width="36%"><img src="img/menu-bar-v1.4.1.png" alt="MacTR 原生菜单栏控制"></td>
+    <td width="64%"><img src="img/settings-v1.4.1.png" alt="MacTR 设置与自定义卡片"></td>
   </tr>
 </table>
 
+<sub>菜单图来自正在运行的原生 `NSMenu`；设置图来自同一版 App 的真实 SwiftUI 界面。</sub>
+
 ## 下载与安装
 
-从 [GitHub Releases](https://github.com/luckykong/mac-thermalright-ai-monitor/releases/tag/v1.4.0)
+从 [GitHub Releases](https://github.com/luckykong/mac-thermalright-ai-monitor/releases/tag/v1.4.1)
 下载以下任一文件：
 
-- `MacTR-v1.4.0-macos-arm64.dmg` —— 推荐，打开后拖入“应用程序”。
-- `MacTR-v1.4.0-macos-arm64.zip` —— 解压后把 `MacTR.app` 放入“应用程序”。
+- `MacTR-v1.4.1-macos-arm64.dmg` —— 推荐，打开后拖入“应用程序”。
+- `MacTR-v1.4.1-macos-arm64.zip` —— 解压后把 `MacTR.app` 放入“应用程序”。
 
 发布包已内置 libusb，普通用户**不需要 Homebrew、Swift、Xcode 或其他程序**。
 
@@ -116,17 +144,19 @@ swift build -c release
 ```
 
 该脚本会校验并从源码构建固定版本的 libusb 1.0.30，生成自包含 App、
-ad-hoc 签名、DMG、ZIP 和 `SHA256SUMS.txt`，输出到 `dist/v1.4.0/`。
+ad-hoc 签名、DMG、ZIP 和 `SHA256SUMS.txt`，输出到 `dist/v1.4.1/`。
 
 ## 运行模式
 
 ```bash
 .build/release/MacTR                 # 菜单栏应用(有 LCD 走 LCD,没有则安静驻留后台)
 .build/release/MacTR --preview       # 强制打开本机预览窗口
-.build/release/MacTR --demo          # 用精美假数据驱动 LCD(方便拍照 / 展示)
-.build/release/MacTR --snapshot x.png --cores 10        # 渲染一帧假数据到 PNG
+.build/release/MacTR --demo          # 用内置演示数据驱动 LCD
+.build/release/MacTR --snapshot x.png --cores 10        # 渲染一帧演示数据到 PNG
+.build/release/MacTR --snapshot x.png --redact-agents   # 真实系统指标 + 脱敏会话文本
 .build/release/MacTR --gif x.gif --frames 48 --fps 12 --scale 2   # 生成演示 GIF
 .build/release/MacTR --benchmark 120 # 测量 LCD 可达帧率
+.build/release/MacTR --smc-test      # 诊断内置风扇读取
 ```
 
 同一时刻只能有一个进程占用 USB 设备 —— 用 `--demo` / `--benchmark` 前先停掉正在运行的实例。

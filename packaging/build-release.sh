@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="1.4.0"
-BUILD_NUMBER="140"
+VERSION="1.4.1"
+BUILD_NUMBER="141"
 MIN_MACOS="15.0"
 ARCH="arm64"
 LIBUSB_VERSION="1.0.30"

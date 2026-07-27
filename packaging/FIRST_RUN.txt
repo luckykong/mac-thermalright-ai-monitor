@@ -1,11 +1,14 @@
-MacTR v1.4.0 — First launch
+MacTR v1.4.1 — First launch
 ================================
 
 1. Drag MacTR.app to Applications.
 2. Because this community build is not notarized, Control-click or right-click
    MacTR.app and choose Open the first time.
 3. MacTR then stays in the menu bar. Use its display icon to open Settings,
-   enable Launch at Login, pause output, or configure the daily schedule.
+   enable Launch at Login, pause output, configure the daily schedule,
+   choose a performance mode, or add a custom script card.
+
+Custom scripts run as your current user. Select only scripts you trust.
 
 No Homebrew, Swift installation, or separate libusb installation is required.
 

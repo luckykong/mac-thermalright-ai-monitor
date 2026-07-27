@@ -40,6 +40,22 @@ func logVerbose(_ message: String) {
     FileHandle.standardError.write(Data((message + "\n").utf8))
 }
 
+/// Version strings, read from the bundle Info.plist that packaging stamps.
+/// Every call site used to carry its own hardcoded fallback copy of the
+/// then-current version, so the numbers drifted apart between releases. The
+/// fallbacks here are deliberately not real versions: seeing "dev" means the
+/// bare SwiftPM binary is running outside an app bundle.
+enum AppVersion {
+    static var short: String {
+        Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+
+    static var build: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+    }
+}
+
 // MARK: - App Entry Point
 
 @main
@@ -559,9 +575,8 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
         let language = preferences.language
         menu = NSMenu()
 
-        let version = Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.1"
-        versionMenuItem = NSMenuItem(title: "MacTR v\(version)", action: nil, keyEquivalent: "")
+        versionMenuItem = NSMenuItem(
+            title: "MacTR v\(AppVersion.short)", action: nil, keyEquivalent: "")
         versionMenuItem.isEnabled = false
         menu.addItem(versionMenuItem)
 
@@ -1098,8 +1113,8 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
 
     @objc private func showAbout() {
-        let version = appVersion
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+        let version = AppVersion.short
+        let build = AppVersion.build
 
         let alert = NSAlert()
         alert.messageText = "MacTR"
@@ -1132,10 +1147,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
         NSApp.terminate(nil)
     }
 
-    private var appVersion: String {
-        Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.1"
-    }
+    private var appVersion: String { AppVersion.short }
 }
 
 // MARK: - CLI Mode

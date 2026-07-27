@@ -213,6 +213,17 @@ swift build -c release
 这个快速构建可能依赖 `/opt/homebrew`，不能直接复制给其他 Mac；跨设备使用请
 运行上面的 `packaging/build-release.sh`。
 
+### 运行测试
+
+```bash
+./scripts/test.sh
+```
+
+测试使用 swift-testing。它随命令行工具一起安装，但 SwiftPM 不会自动把它的
+framework 与动态库目录加入搜索路径，直接执行 `swift test` 会报
+`no such module 'Testing'`。上面的脚本负责补齐这些路径；如果装了完整版
+Xcode，脚本会跳过这些参数直接调用 `swift test`。
+
 ## 运行模式
 
 ```bash

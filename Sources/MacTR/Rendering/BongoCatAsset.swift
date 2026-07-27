@@ -7,7 +7,7 @@ import Foundation
 import ImageIO
 
 enum BongoCatAsset {
-    nonisolated(unsafe) static let image: CGImage? = {
+    static let image: CGImage? = {
         guard let data = Data(base64Encoded: base64PNG),
               let src = CGImageSourceCreateWithData(data as CFData, nil),
               let img = CGImageSourceCreateImageAtIndex(src, 0, nil)

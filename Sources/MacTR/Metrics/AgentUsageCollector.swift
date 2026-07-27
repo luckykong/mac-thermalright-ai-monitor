@@ -66,7 +66,12 @@ final class AgentUsageCollector: @unchecked Sendable {
     private var dayKey = ""
     private var todayStartISO = ""      // lexical threshold for ISO8601 "Z" timestamps
     private var claudeOffsets: [String: UInt64] = [:]
+    /// Reset at midnight. Capped as a safety net only: an always-on process
+    /// should not hold a set that grows without any ceiling, even though
+    /// reaching this one would take a six-figure message count in a single day.
+    private static let maxSeenIDs = 200_000
     private var claudeSeenIDs: Set<String> = []
+    private var claudeSeenIDsOverflowed = false
     private var claudeInput: UInt64 = 0
     private var claudeOutput: UInt64 = 0
     private var codexOffsets: [String: UInt64] = [:]
@@ -108,6 +113,7 @@ final class AgentUsageCollector: @unchecked Sendable {
         todayStartISO = iso.string(from: Calendar.current.startOfDay(for: Date()))
 
         claudeOffsets = [:]; claudeSeenIDs = []; claudeInput = 0; claudeOutput = 0
+        claudeSeenIDsOverflowed = false
         codexOffsets = [:]; codexInput = 0; codexOutput = 0
     }
 
@@ -189,7 +195,15 @@ final class AgentUsageCollector: @unchecked Sendable {
         else { return }
         // Dedupe: continued/forked sessions copy earlier entries into new files
         if let id = msg["id"] as? String {
-            guard claudeSeenIDs.insert(id).inserted else { return }
+            if claudeSeenIDs.count >= Self.maxSeenIDs {
+                if !claudeSeenIDsOverflowed {
+                    claudeSeenIDsOverflowed = true
+                    log("[Agents] Claude dedupe set reached \(Self.maxSeenIDs) ids;"
+                        + " duplicates may be double-counted until midnight.")
+                }
+            } else if !claudeSeenIDs.insert(id).inserted {
+                return
+            }
         }
         claudeInput += uint(usage["input_tokens"])
             + uint(usage["cache_creation_input_tokens"])

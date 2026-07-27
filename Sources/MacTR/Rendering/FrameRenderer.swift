@@ -24,6 +24,11 @@ enum JPEGEncoder {
     nonisolated(unsafe) private static var processingCtx: CGContext?
     private static let encodeLock = NSLock()
 
+    /// Where the quality search starts. Frame size barely moves between frames,
+    /// so restarting at 0.9 every time re-encoded the whole image several times
+    /// per frame just to rediscover the same answer. Guarded by `encodeLock`.
+    nonisolated(unsafe) private static var lastGoodQuality = 0.9
+
     /// Encode a CGImage to JPEG for the LCD, optionally rotating 180° and
     /// brightening. Reduces quality if over 650KB (matches Python behavior).
     ///
@@ -82,16 +87,20 @@ enum JPEGEncoder {
                 finalImage = processed
             }
 
-            // Encode to JPEG with quality reduction loop
-            var quality = 0.9
+            // Encode to JPEG, stepping quality down until it fits. Resume just
+            // above the last quality that worked so the value drifts back up
+            // when frames get cheaper, without re-probing from 0.9 every time.
+            var quality = min(lastGoodQuality + 0.05, 0.9)
             while quality > 0.3 {
-                if let data = jpegData(from: finalImage, quality: quality) {
-                    if data.count <= maxBytes || quality <= 0.3 {
-                        return data
-                    }
+                if let data = jpegData(from: finalImage, quality: quality),
+                   data.count <= maxBytes
+                {
+                    lastGoodQuality = quality
+                    return data
                 }
                 quality -= 0.05
             }
+            lastGoodQuality = 0.3
             return jpegData(from: finalImage, quality: 0.3)
         }
     }

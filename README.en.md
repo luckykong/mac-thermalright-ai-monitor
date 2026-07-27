@@ -2,6 +2,10 @@
 
 [中文](README.md) · [English](README.en.md)
 
+<p align="center">
+  <img src="img/app-icon-v1.4.0.png" width="112" alt="MacTR app icon">
+</p>
+
 Turn the 1920×480 LCD on your Thermalright CPU cooler into a live dashboard that shows
 your Mac's vitals **and what your AI coding agents are doing right now** — all native on
 macOS, no Windows required.
@@ -12,8 +16,8 @@ macOS, no Windows required.
 
 ![Dashboard](img/dashboard.gif)
 
-<sub>Live demo (fake data). Both agents "working" → columns breathe, Bongo Cat types,
-Pikachu hops and crackles with CPU load, clock ticks.</sub>
+<sub>Live demo (fake data). CPU, GPU, memory, network and fans are visible on the left;
+both agents "working" → columns breathe, Bongo Cat types and Pikachu crackles.</sub>
 
 > Fork of [beret21/MacTR](https://github.com/beret21/MacTR), reworked around a central
 > **AI Agents** panel that tracks [Claude Code](https://claude.com/claude-code) and
@@ -35,10 +39,14 @@ for each agent, side by side:
   ~10 s when it finishes a turn or needs your input.
 
 ### 🖥️ System panels
-- **CPU** — usage arc gauge, per-core P/E bars, temperature (via IOHIDEventSystemClient,
-  no sudo), load average.
-- **Memory** — pressure-colored usage gauge, Active/Wired/Compressed/Available breakdown,
-  a full-width clock, date, uptime and process count.
+- **CPU** — usage arc gauge, compact per-core P/E bars, temperature (via
+  IOHIDEventSystemClient, no sudo), and 1-minute load.
+- **GPU** — device, renderer and tiler utilization, temperature and allocated memory.
+- **Memory** — pressure-colored usage gauge plus Active/Wired/Compressed/Available details.
+- **Network** — live download/upload rates across non-loopback interfaces with a 30-second trend.
+- **Fans** — live RPM and percentage of maximum speed for built-in Mac fans, with distinct
+  fanless and unavailable states.
+- The bottom system card also keeps the date, clock, uptime and process count.
 
 ### 🐱⚡ Desk pets that react to activity
 - A **Bongo Cat** taps its keyboard while your agents work (and dozes when idle).
@@ -49,9 +57,42 @@ for each agent, side by side:
 - **Adaptive frame rate** — the LCD runs at ~15 fps only while something is animating
   (agent working, heavy CPU); otherwise it idles at 2 fps to save power.
 - **USB hotplug** — auto-reconnect on plug/unplug and sleep/wake.
-- **On-Mac preview** — when no LCD is connected it renders to a window instead, so you can
-  develop and see changes without the hardware.
-- **Menu bar app** — runs in the background, no dock icon.
+- **On-Mac preview** — open it from the menu at any time, or opt into showing it
+  automatically while the LCD is disconnected.
+- **Menu bar app** — runs in the background with no Dock icon; closing Preview or
+  Settings does not quit it.
+
+### 🕘 Menu bar, login launch, and daily scheduling
+
+- Pause/resume LCD output, reconnect, preview, and open Settings from the menu bar.
+- Uses macOS `SMAppService` for Launch at Login—no hand-written LaunchAgent.
+- A daily schedule can pause output at one time and resume at another, including
+  overnight active windows.
+- The close action can instead quit MacTR. A terminated app cannot start itself at the
+  resume time; reopen it manually or use Launch at Login.
+- Brightness, rotation, refresh interval, preview behavior, and schedule settings persist.
+
+<table>
+  <tr>
+    <td width="36%"><img src="img/menu-bar-v1.4.0.png" alt="MacTR menu-bar controls"></td>
+    <td width="64%"><img src="img/settings-v1.4.0.png" alt="MacTR settings and daily schedule"></td>
+  </tr>
+</table>
+
+## Download & install
+
+Download either artifact from
+[GitHub Releases](https://github.com/luckykong/mac-thermalright-ai-monitor/releases/tag/v1.4.0):
+
+- `MacTR-v1.4.0-macos-arm64.dmg` — recommended; open it and drag MacTR to Applications.
+- `MacTR-v1.4.0-macos-arm64.zip` — unzip and move `MacTR.app` to Applications.
+
+libusb is bundled. End users **do not need Homebrew, Swift, Xcode, or any other runtime**.
+
+> This community build is ad-hoc signed and cannot be Apple-notarized without a
+> Developer ID. On first launch, Control-click or right-click `MacTR.app`, choose
+> **Open**, then confirm once. Normal double-click launch works afterward. Do not
+> disable Gatekeeper globally.
 
 ## Hardware
 
@@ -62,40 +103,42 @@ for each agent, side by side:
 | **Connection** | USB Type-C (USB 2.0) |
 | **Device** | `0416:5408` (LY Bulk protocol) |
 
-## Requirements
+## Runtime requirements
 
 - Apple Silicon Mac (M1–M5)
 - macOS 15 (Sequoia) or newer
-- [Homebrew](https://brew.sh) with `libusb`
-- A recent Swift toolchain (Xcode 16+, or Swift 6.1+ via Homebrew)
+- Thermalright Trofeo Vision 9.16 LCD (the manual Preview still works without hardware)
 
-## Build & run
+## Build from source
+
+Only source developers need a Swift toolchain, pkg-config, and libusb:
 
 ```bash
 brew install libusb pkg-config
 
-git clone https://github.com/m1ng-li/mac-thermalright-ai-monitor.git
+git clone https://github.com/luckykong/mac-thermalright-ai-monitor.git
 cd mac-thermalright-ai-monitor
 swift build -c release
 
-.build/release/MacTR          # menu-bar app; drives the LCD, or previews in a window
+.build/release/MacTR          # menu-bar app; drives the LCD or stays quietly in the menu bar
 ```
 
 > If your Command Line Tools are broken and `swift build` fails on the package manifest,
 > install the Homebrew Swift toolchain (`brew install swift`) and use
 > `/opt/homebrew/opt/swift/bin/swift build -c release`.
 
-### Auto-start on login
-
 ```bash
-cp packaging/com.beret21.MacTR.plist ~/Library/LaunchAgents/   # edit the path inside first
-launchctl load -w ~/Library/LaunchAgents/com.beret21.MacTR.plist
+./packaging/build-release.sh
 ```
+
+The release script verifies and builds pinned libusb 1.0.30 from source, then creates
+a self-contained app, ad-hoc signature, DMG, ZIP, and `SHA256SUMS.txt` under
+`dist/v1.4.0/`.
 
 ## Modes
 
 ```bash
-.build/release/MacTR                 # menu-bar app (LCD, or preview window if no LCD)
+.build/release/MacTR                 # menu-bar app (LCD, or quiet background mode without it)
 .build/release/MacTR --preview       # force the on-Mac preview window
 .build/release/MacTR --demo          # drive the LCD with polished fake data (for photos)
 .build/release/MacTR --snapshot x.png --cores 10   # render one demo frame to a PNG
@@ -121,7 +164,9 @@ context when an agent hasn't run yet today.
 
 ## Privacy
 
-Everything is local and read-only. No telemetry, no network calls, nothing leaves your Mac.
+Metrics and agent transcripts stay local and read-only. There is no telemetry and nothing
+is uploaded. “View Latest Release” only opens this repository’s Releases page in your
+default browser when you choose it.
 
 ## Credits
 
@@ -137,7 +182,9 @@ Everything is local and read-only. No telemetry, no network calls, nothing leave
 
 ## License
 
-MIT (inherited from the upstream project). Third-party assets remain under their own terms.
+MacTR is available under the [MIT License](LICENSE). Release builds dynamically link
+libusb 1.0.30 (LGPL-2.1-or-later); its complete license and source information are bundled
+inside the app. Third-party artwork remains under its own terms.
 
 ---
 

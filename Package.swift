@@ -6,9 +6,6 @@ let package = Package(
     platforms: [
         .macOS("15.0")
     ],
-    dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.0.0"),
-    ],
     targets: [
         .systemLibrary(
             name: "CLibUSB",
@@ -29,16 +26,14 @@ let package = Package(
             dependencies: [
                 "CLibUSB",
                 "CThermalSensor",
-                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/MacTR",
-            swiftSettings: [
-                .unsafeFlags(["-I/opt/homebrew/include/libusb-1.0"]),
-            ],
-            linkerSettings: [
-                .unsafeFlags(["-L/opt/homebrew/lib"]),
-                .linkedLibrary("usb-1.0"),
-            ]
+            exclude: ["Resources/Info.plist"]
+        ),
+        .testTarget(
+            name: "MacTRTests",
+            dependencies: ["MacTR"],
+            path: "Tests/MacTRTests"
         ),
     ]
 )

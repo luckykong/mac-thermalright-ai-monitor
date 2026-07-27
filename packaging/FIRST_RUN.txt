@@ -1,0 +1,12 @@
+MacTR v1.4.0 — First launch
+================================
+
+1. Drag MacTR.app to Applications.
+2. Because this community build is not notarized, Control-click or right-click
+   MacTR.app and choose Open the first time.
+3. MacTR then stays in the menu bar. Use its display icon to open Settings,
+   enable Launch at Login, pause output, or configure the daily schedule.
+
+No Homebrew, Swift installation, or separate libusb installation is required.
+
+Requirements: Apple Silicon Mac, macOS 15 Sequoia or newer.

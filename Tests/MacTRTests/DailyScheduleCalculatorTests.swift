@@ -146,6 +146,7 @@ struct DailyScheduleCalculatorTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let first = AppPreferences(defaults: defaults)
+        first.language = .english
         first.brightness = 9
         first.refreshInterval = 2
         first.performanceMode = .eco
@@ -155,6 +156,7 @@ struct DailyScheduleCalculatorTests {
         first.customScriptPath = "/tmp/status card.sh"
         first.customScriptDisplayName = "STATUS"
         first.customScriptIntervalSeconds = 45
+        first.customScriptFontMode = .large
         first.scheduleEnabled = true
         first.scheduleAction = .quitApp
         first.automaticStartEnabled = false
@@ -162,6 +164,7 @@ struct DailyScheduleCalculatorTests {
         first.closeMinutes = 22 * 60 + 45
 
         let restored = AppPreferences(defaults: defaults)
+        #expect(restored.language == .english)
         #expect(restored.brightness == 9)
         #expect(restored.refreshInterval == 2)
         #expect(restored.performanceMode == .eco)
@@ -171,6 +174,7 @@ struct DailyScheduleCalculatorTests {
         #expect(restored.customScriptPath == "/tmp/status card.sh")
         #expect(restored.customScriptDisplayName == "STATUS")
         #expect(restored.customScriptIntervalSeconds == 45)
+        #expect(restored.customScriptFontMode == .large)
         #expect(restored.scheduleEnabled)
         #expect(restored.scheduleAction == .quitApp)
         #expect(!restored.automaticStartEnabled)

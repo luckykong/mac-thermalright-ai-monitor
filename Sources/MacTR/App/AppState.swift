@@ -18,16 +18,29 @@ enum DisplaySet: String, CaseIterable, Identifiable, Sendable {
     case systemMonitor = "System Monitor"
 
     var id: String { rawValue }
+
+    func title(language: AppLanguage) -> String {
+        switch self {
+        case .systemMonitor: language.text(.systemMonitor)
+        }
+    }
 }
 
 enum DisplayPauseReason: String, Equatable, Sendable {
     case manual
     case schedule
 
-    var statusMessage: String {
+    var internalStatusMessage: String {
         switch self {
         case .manual: "Paused"
         case .schedule: "Paused by daily schedule"
+        }
+    }
+
+    func statusMessage(language: AppLanguage) -> String {
+        switch self {
+        case .manual: language.text(.paused)
+        case .schedule: language.text(.pausedBySchedule)
         }
     }
 }
@@ -72,6 +85,10 @@ final class AppState {
 
     var isPaused: Bool { pauseReason != nil }
 
+    var localizedStatusMessage: String {
+        AppLocalization.localizedStatus(statusMessage, language: preferences.language)
+    }
+
     // MARK: - Lifecycle
 
     func start() {
@@ -112,7 +129,9 @@ final class AppState {
             brightness: preferences.brightness,
             performanceMode: preferences.performanceMode,
             rotate: preferences.rotateDisplay,
-            customScript: preferences.customScriptConfiguration)
+            customScript: preferences.customScriptConfiguration,
+            language: preferences.language,
+            customScriptFontMode: preferences.customScriptFontMode)
     }
 
     func stop() {
@@ -137,7 +156,7 @@ final class AppState {
         isConnected = false
         pauseReason = reason
         runtimeState = .paused(reason)
-        statusMessage = reason.statusMessage
+        statusMessage = reason.internalStatusMessage
         frameCount = 0
         lastFrameSize = 0
         customScriptSnapshot = .disabled
@@ -186,7 +205,9 @@ final class AppState {
             brightness: preferences.brightness,
             performanceMode: preferences.performanceMode,
             rotate: preferences.rotateDisplay,
-            customScript: preferences.customScriptConfiguration)
+            customScript: preferences.customScriptConfiguration,
+            language: preferences.language,
+            customScriptFontMode: preferences.customScriptFontMode)
     }
 
     /// Latest rendered frame for the on-Mac preview window
@@ -256,6 +277,8 @@ final class DisplayEngine: @unchecked Sendable {
     private var performanceMode: PerformanceMode = .balanced
     private var rotateDisplay: Bool = false
     private var customScript = CustomScriptConfiguration.disabled
+    private var customScriptFontMode: CustomScriptFontMode = .automatic
+    private var language: AppLanguage = .simplifiedChinese
     private var previewActive = false
 
     private let frameLock = NSLock()
@@ -274,7 +297,9 @@ final class DisplayEngine: @unchecked Sendable {
         brightness: Int,
         performanceMode: PerformanceMode,
         rotate: Bool,
-        customScript: CustomScriptConfiguration
+        customScript: CustomScriptConfiguration,
+        language: AppLanguage,
+        customScriptFontMode: CustomScriptFontMode
     ) {
         enabled = true
         self.currentSet = set
@@ -282,9 +307,13 @@ final class DisplayEngine: @unchecked Sendable {
         self.performanceMode = performanceMode
         self.rotateDisplay = rotate
         self.customScript = customScript
+        self.customScriptFontMode = customScriptFontMode
+        self.language = language
         monitorRenderer.configure(
             performanceMode: performanceMode,
-            customScript: customScript)
+            customScript: customScript,
+            language: language,
+            customScriptFontMode: customScriptFontMode)
 
         usbQueue.async { [weak self] in
             guard let self else { return }
@@ -343,7 +372,9 @@ final class DisplayEngine: @unchecked Sendable {
         brightness: Int,
         performanceMode: PerformanceMode,
         rotate: Bool,
-        customScript: CustomScriptConfiguration
+        customScript: CustomScriptConfiguration,
+        language: AppLanguage,
+        customScriptFontMode: CustomScriptFontMode
     ) {
         log("[Engine] Settings updated: set=\(set.rawValue), brightness=\(brightness), performance=\(performanceMode.rawValue), rotate=\(rotate)")
         self.currentSet = set
@@ -351,9 +382,13 @@ final class DisplayEngine: @unchecked Sendable {
         self.performanceMode = performanceMode
         self.rotateDisplay = rotate
         self.customScript = customScript
+        self.customScriptFontMode = customScriptFontMode
+        self.language = language
         monitorRenderer.configure(
             performanceMode: performanceMode,
-            customScript: customScript)
+            customScript: customScript,
+            language: language,
+            customScriptFontMode: customScriptFontMode)
     }
 
     func setPreviewActive(_ active: Bool) {

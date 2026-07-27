@@ -220,12 +220,21 @@ final class DailyScheduleController {
     }
 
     var nextActionDescription: String {
-        guard preferences.scheduleEnabled else { return "Off" }
-        guard let boundary = nextBoundary(after: Date()) else { return "Unavailable" }
+        let language = preferences.language
+        guard preferences.scheduleEnabled else {
+            return language.text(.scheduleNextOff)
+        }
+        guard let boundary = nextBoundary(after: Date()) else {
+            return language.text(.scheduleNextUnavailable)
+        }
         let formatter = DateFormatter()
+        formatter.locale = language.locale
         formatter.dateFormat = "EEE HH:mm"
-        let action = boundary.kind == .start ? "Start" :
-            (preferences.scheduleAction == .quitApp ? "Quit" : "Pause")
+        let action = boundary.kind == .start
+            ? language.text(.scheduleNextStart)
+            : (preferences.scheduleAction == .quitApp
+                ? language.text(.scheduleNextQuit)
+                : language.text(.scheduleNextPause))
         return "\(action) \(formatter.string(from: boundary.date))"
     }
 

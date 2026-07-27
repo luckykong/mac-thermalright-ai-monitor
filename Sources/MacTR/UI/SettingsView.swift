@@ -36,101 +36,120 @@ struct SettingsView: View {
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            Tab("General", systemImage: "gearshape", value: SettingsTab.general) {
+            Tab(t(.general), systemImage: "gearshape", value: SettingsTab.general) {
                 generalSettings
             }
 
-            Tab("Display", systemImage: "display", value: SettingsTab.display) {
+            Tab(t(.display), systemImage: "display", value: SettingsTab.display) {
                 displaySettings
             }
 
-            Tab("Custom Card", systemImage: "terminal", value: SettingsTab.customCard) {
+            Tab(t(.customCard), systemImage: "terminal", value: SettingsTab.customCard) {
                 customCardSettings
             }
 
-            Tab("Device", systemImage: "cable.connector", value: SettingsTab.device) {
+            Tab(t(.device), systemImage: "cable.connector", value: SettingsTab.device) {
                 deviceSettings
             }
 
-            Tab("About", systemImage: "info.circle", value: SettingsTab.about) {
+            Tab(t(.about), systemImage: "info.circle", value: SettingsTab.about) {
                 aboutView
             }
         }
         .frame(width: 580, height: 760)
+        .environment(\.locale, preferences.language.locale)
     }
 
     // MARK: - General
 
     private var generalSettings: some View {
         Form {
-            Section("Startup & Background") {
-                Toggle("Launch at Login", isOn: launchAtLoginBinding)
+            Section(t(.language)) {
+                Picker(t(.interfaceLanguage), selection: $preferences.language) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: preferences.language) {
+                    state.applySettings()
+                }
+
+                Text(t(.languageChangeHint))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section(t(.startupAndBackground)) {
+                Toggle(t(.launchAtLogin), isOn: launchAtLoginBinding)
                     .disabled(!launchAtLogin.isAvailable)
 
                 if launchAtLogin.requiresApproval {
                     HStack {
-                        Text("Approval is required in System Settings → Login Items.")
+                        Text(t(.loginApprovalRequired))
                             .font(.caption)
                             .foregroundStyle(.orange)
                         Spacer()
-                        Button("Open System Settings") {
+                        Button(t(.openSystemSettings)) {
                             openLoginItemsSettings()
                         }
                     }
-                } else if let message = launchAtLogin.errorMessage {
+                } else if let message = launchAtLogin.localizedErrorMessage(
+                    language: preferences.language)
+                {
                     Text(message)
                         .font(.caption)
                         .foregroundStyle(.red)
                 } else if !launchAtLogin.isAvailable {
-                    Text("Available when running the packaged MacTR.app.")
+                    Text(t(.packagedAppOnly))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                LabeledContent("Background mode") {
-                    Text("Menu bar")
+                LabeledContent(t(.backgroundMode)) {
+                    Text(t(.menuBar))
                         .foregroundStyle(.secondary)
                 }
-                Text("Closing Settings or Preview keeps MacTR running. Use Quit MacTR in the menu to stop it.")
+                Text(t(.backgroundBehaviorHint))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 Toggle(
-                    "Show Preview automatically when the LCD is disconnected",
+                    t(.autoShowPreview),
                     isOn: $preferences.autoShowPreviewWhenDisconnected)
             }
 
-            Section("Daily Schedule") {
-                Toggle("Enable daily schedule", isOn: $preferences.scheduleEnabled)
+            Section(t(.dailySchedule)) {
+                Toggle(t(.enableDailySchedule), isOn: $preferences.scheduleEnabled)
 
-                Picker("At close time", selection: $preferences.scheduleAction) {
+                Picker(t(.atCloseTime), selection: $preferences.scheduleAction) {
                     ForEach(ScheduleCloseAction.allCases) { action in
-                        Text(action.title).tag(action)
+                        Text(action.title(language: preferences.language)).tag(action)
                     }
                 }
                 .disabled(!preferences.scheduleEnabled)
 
                 DatePicker(
-                    "Close time",
+                    t(.closeTime),
                     selection: closeTimeBinding,
                     displayedComponents: .hourAndMinute)
                     .disabled(!preferences.scheduleEnabled)
 
                 if preferences.scheduleAction == .pauseDisplay {
                     Toggle(
-                        "Resume output automatically",
+                        t(.resumeAutomatically),
                         isOn: $preferences.automaticStartEnabled)
                         .disabled(!preferences.scheduleEnabled)
 
                     DatePicker(
-                        "Resume time",
+                        t(.resumeTime),
                         selection: startTimeBinding,
                         displayedComponents: .hourAndMinute)
                         .disabled(
                             !preferences.scheduleEnabled
                                 || !preferences.automaticStartEnabled)
                 } else {
-                    Text("A quit app cannot start itself later. Reopen MacTR manually or enable Launch at Login.")
+                    Text(t(.quitCannotResume))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -140,19 +159,19 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Performance") {
-                Picker("Mode", selection: $preferences.performanceMode) {
+            Section(t(.performance)) {
+                Picker(t(.mode), selection: $preferences.performanceMode) {
                     ForEach(PerformanceMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+                        Text(mode.title(language: preferences.language)).tag(mode)
                     }
                 }
                 .onChange(of: preferences.performanceMode) {
                     state.applySettings()
                 }
-                Text(preferences.performanceMode.detail)
+                Text(preferences.performanceMode.detail(language: preferences.language))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Balanced lowers animation and metric cadence without removing any dashboard data.")
+                Text(t(.balancedHint))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -165,10 +184,10 @@ struct SettingsView: View {
 
     private var displaySettings: some View {
         Form {
-            Section("Display Set") {
-                Picker("Active Set", selection: $preferences.currentSet) {
+            Section(t(.displaySet)) {
+                Picker(t(.activeSet), selection: $preferences.currentSet) {
                     ForEach(DisplaySet.allCases) { set in
-                        Text(set.rawValue).tag(set)
+                        Text(set.title(language: preferences.language)).tag(set)
                     }
                 }
                 .onChange(of: preferences.currentSet) {
@@ -176,10 +195,10 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Brightness") {
+            Section(t(.brightness)) {
                 HStack {
                     Slider(value: brightnessBinding, in: 1...10, step: 1) {
-                        Text("Level")
+                        Text(t(.level))
                     }
                     Text("\(preferences.brightness)")
                         .monospacedDigit()
@@ -188,17 +207,17 @@ struct SettingsView: View {
                 .onChange(of: preferences.brightness) {
                     state.applySettings()
                 }
-                Text("1 = original, 10 = maximum")
+                Text(t(.brightnessHint))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Rotation") {
-                Toggle("Rotate 180°", isOn: $preferences.rotateDisplay)
+            Section(t(.rotation)) {
+                Toggle(t(.rotate180), isOn: $preferences.rotateDisplay)
                     .onChange(of: preferences.rotateDisplay) {
                         state.applySettings()
                     }
-                Text("Enable if the physical display appears upside down.")
+                Text(t(.rotationHint))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -211,16 +230,16 @@ struct SettingsView: View {
 
     private var customCardSettings: some View {
         Form {
-            Section("Custom Script Card") {
-                Toggle("Show custom script output", isOn: $preferences.customScriptEnabled)
+            Section(t(.customScriptCard)) {
+                Toggle(t(.showCustomScriptOutput), isOn: $preferences.customScriptEnabled)
                     .onChange(of: preferences.customScriptEnabled) {
                         state.applySettings()
                     }
 
-                LabeledContent("Script") {
+                LabeledContent(t(.script)) {
                     HStack {
                         Text(preferences.customScriptPath.isEmpty
-                             ? "Not selected"
+                             ? t(.notSelected)
                              : preferences.customScriptPath)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -228,26 +247,26 @@ struct SettingsView: View {
                                 preferences.customScriptPath.isEmpty
                                     ? .secondary : .primary)
                             .frame(maxWidth: 300, alignment: .trailing)
-                        Button("Choose…") {
+                        Button(t(.choose)) {
                             chooseCustomScript()
                         }
                     }
                 }
 
                 if !preferences.customScriptPath.isEmpty {
-                    Button("Clear Script", role: .destructive) {
+                    Button(t(.clearScript), role: .destructive) {
                         preferences.customScriptPath = ""
                         state.applySettings()
                     }
                 }
 
-                TextField("Card name", text: $preferences.customScriptDisplayName)
+                TextField(t(.cardName), text: $preferences.customScriptDisplayName)
                     .onChange(of: preferences.customScriptDisplayName) {
                         state.applySettings()
                     }
 
                 HStack {
-                    Text("Run every")
+                    Text(t(.runEvery))
                     Spacer()
                     TextField(
                         "",
@@ -259,16 +278,33 @@ struct SettingsView: View {
                         .onSubmit {
                             state.applySettings()
                         }
-                    Text("seconds")
+                    Text(t(.seconds))
                         .foregroundStyle(.secondary)
                 }
-                Text("Allowed range: 5 seconds to 24 hours. Runs never overlap and time out automatically.")
+                Text(t(.scriptIntervalHint))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                LabeledContent(t(.scriptFontSize)) {
+                    Picker("", selection: $preferences.customScriptFontMode) {
+                        ForEach(CustomScriptFontMode.allCases) { mode in
+                            Text(mode.title(language: preferences.language)).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 280)
+                    .onChange(of: preferences.customScriptFontMode) {
+                        state.applySettings()
+                    }
+                }
+                Text(t(.scriptFontSizeHint))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Test & Status") {
-                LabeledContent("State") {
+            Section(t(.testAndStatus)) {
+                LabeledContent(t(.state)) {
                     HStack {
                         Circle()
                             .fill(scriptStatusColor)
@@ -277,7 +313,7 @@ struct SettingsView: View {
                     }
                 }
 
-                Button("Run Now") {
+                Button(t(.runNow)) {
                     state.applySettings()
                     state.runCustomScriptNow()
                 }
@@ -305,11 +341,11 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Execution Rules") {
-                Text("Shell files (.sh, .zsh and .command) run with the system /bin/zsh. Other files must be executable and include a valid shebang. MacTR passes the selected path directly and never evaluates a command string.")
+            Section(t(.executionRules)) {
+                Text(t(.shellExecutionRule))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("The script runs as the current user without administrator privileges. stdout and stderr are capped at 8 KB; ANSI control sequences are removed.")
+                Text(t(.scriptSecurityRule))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -322,44 +358,44 @@ struct SettingsView: View {
 
     private var deviceSettings: some View {
         Form {
-            Section("Output") {
-                LabeledContent("State") {
+            Section(t(.output)) {
+                LabeledContent(t(.state)) {
                     HStack {
                         Circle()
                             .fill(statusColor)
                             .frame(width: 8, height: 8)
-                        Text(state.statusMessage)
+                        Text(state.localizedStatusMessage)
                     }
                 }
 
                 if state.isPaused {
-                    Button("Resume Display Output") {
+                    Button(t(.resumeDisplayOutput)) {
                         resumeDisplay()
                     }
                 } else {
-                    Button("Pause Display Output") {
+                    Button(t(.pauseDisplayOutput)) {
                         pauseDisplay()
                     }
                 }
             }
 
-            Section("Connection") {
+            Section(t(.connection)) {
                 if let info = state.deviceInfo {
-                    LabeledContent("Resolution", value: "\(info.width) × \(info.height)")
+                    LabeledContent(t(.resolution), value: "\(info.width) × \(info.height)")
                     LabeledContent("PM / SUB / FBL", value: "\(info.pm) / \(info.sub) / \(info.fbl)")
                     LabeledContent("PID", value: String(format: "0x%04X", info.pid))
                 }
 
                 if !state.isConnected && !state.isPaused {
-                    Button("Reconnect") {
+                    Button(t(.reconnect)) {
                         state.connect()
                     }
                 }
             }
 
-            Section("Statistics") {
-                LabeledContent("Frames Sent", value: "\(state.frameCount)")
-                LabeledContent("Last Frame", value: "\(state.lastFrameSize / 1024) KB")
+            Section(t(.statistics)) {
+                LabeledContent(t(.framesSent), value: "\(state.frameCount)")
+                LabeledContent(t(.lastFrame), value: "\(state.lastFrameSize / 1024) KB")
             }
         }
         .formStyle(.grouped)
@@ -378,11 +414,11 @@ struct SettingsView: View {
                 .font(.title)
                 .fontWeight(.semibold)
 
-            Text("Version \(appVersion) (\(appBuild))")
+            Text("\(t(.version)) \(appVersion) (\(appBuild))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Text("AI agent and system monitor for the Thermalright Trofeo Vision 9.16 LCD")
+            Text(t(.appDescription))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -390,12 +426,12 @@ struct SettingsView: View {
 
             Divider().frame(width: 240)
 
-            Text("Built with Swift and libusb")
+            Text(t(.builtWith))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Link(
-                "GitHub Releases",
+                t(.githubReleases),
                 destination: URL(
                     string: "https://github.com/luckykong/mac-thermalright-ai-monitor/releases")!)
 
@@ -405,6 +441,10 @@ struct SettingsView: View {
     }
 
     // MARK: - Bindings & Helpers
+
+    private func t(_ key: L10nKey) -> String {
+        preferences.language.text(key)
+    }
 
     private var launchAtLoginBinding: Binding<Bool> {
         Binding(
@@ -452,17 +492,27 @@ struct SettingsView: View {
 
     private var scheduleDescription: String {
         guard preferences.scheduleEnabled else {
-            return "The schedule is disabled."
+            return t(.scheduleDisabledDescription)
         }
         let close = AppPreferences.formattedTime(minutes: preferences.closeMinutes)
         if preferences.scheduleAction == .quitApp {
-            return "MacTR quits every day at \(close)."
+            return AppLocalization.format(
+                .scheduleQuitDescription,
+                language: preferences.language,
+                close)
         }
         guard preferences.automaticStartEnabled else {
-            return "Display output pauses every day at \(close) and resumes manually."
+            return AppLocalization.format(
+                .schedulePauseDescription,
+                language: preferences.language,
+                close)
         }
         let start = AppPreferences.formattedTime(minutes: preferences.startMinutes)
-        return "Display output runs daily from \(start) to \(close). Overnight ranges are supported."
+        return AppLocalization.format(
+            .scheduleActiveDescription,
+            language: preferences.language,
+            start,
+            close)
     }
 
     private var statusColor: SwiftUI.Color {
@@ -489,15 +539,15 @@ struct SettingsView: View {
 
     private var scriptStatusText: String {
         switch state.customScriptSnapshot.state {
-        case .disabled: "Disabled"
-        case .unconfigured: "Choose a script"
-        case .ready: "Ready"
-        case .running: "Running"
-        case .succeeded: "Last run succeeded"
-        case .failed: "Last run failed"
-        case .timedOut: "Timed out"
-        case .missing: "File not found"
-        case .invalid: "Invalid script"
+        case .disabled: t(.scriptDisabled)
+        case .unconfigured: t(.scriptChoose)
+        case .ready: t(.scriptReady)
+        case .running: t(.scriptRunning)
+        case .succeeded: t(.scriptSucceeded)
+        case .failed: t(.scriptFailed)
+        case .timedOut: t(.scriptTimedOut)
+        case .missing: t(.scriptMissing)
+        case .invalid: t(.scriptInvalid)
         }
     }
 
@@ -513,8 +563,8 @@ struct SettingsView: View {
 
     private func chooseCustomScript() {
         let panel = NSOpenPanel()
-        panel.title = "Choose a Script for the Custom Card"
-        panel.prompt = "Choose"
+        panel.title = t(.chooseScriptTitle)
+        panel.prompt = t(.choose)
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
@@ -534,28 +584,28 @@ struct ScheduleTimeEditorView: View {
 
     var body: some View {
         Form {
-            Toggle("Enable daily schedule", isOn: $preferences.scheduleEnabled)
+            Toggle(t(.enableDailySchedule), isOn: $preferences.scheduleEnabled)
 
-            Picker("Close action", selection: $preferences.scheduleAction) {
+            Picker(t(.closeAction), selection: $preferences.scheduleAction) {
                 ForEach(ScheduleCloseAction.allCases) { action in
-                    Text(action.title).tag(action)
+                    Text(action.title(language: preferences.language)).tag(action)
                 }
             }
 
             DatePicker(
-                "Close",
+                t(.close),
                 selection: timeBinding(isStart: false),
                 displayedComponents: .hourAndMinute)
 
             if preferences.scheduleAction == .pauseDisplay {
-                Toggle("Automatic resume", isOn: $preferences.automaticStartEnabled)
+                Toggle(t(.automaticResume), isOn: $preferences.automaticStartEnabled)
                 DatePicker(
-                    "Resume",
+                    t(.resume),
                     selection: timeBinding(isStart: true),
                     displayedComponents: .hourAndMinute)
                     .disabled(!preferences.automaticStartEnabled)
             } else {
-                Text("Scheduled resume is unavailable after quitting the app.")
+                Text(t(.scheduledResumeUnavailable))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -563,6 +613,11 @@ struct ScheduleTimeEditorView: View {
         .formStyle(.grouped)
         .padding()
         .frame(width: 360, height: 260)
+        .environment(\.locale, preferences.language.locale)
+    }
+
+    private func t(_ key: L10nKey) -> String {
+        preferences.language.text(key)
     }
 
     private func timeBinding(isStart: Bool) -> Binding<Date> {

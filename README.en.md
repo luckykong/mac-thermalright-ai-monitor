@@ -14,9 +14,9 @@ macOS, no Windows required.
 
 ![Dashboard](img/dashboard.gif)
 
-<sub>The static frame comes from the current renderer with system metrics from the
-connected Mac. Agent text and the custom card use redacted examples; the animated
-preview uses the built-in showcase dataset.</sub>
+<sub>Both images come from the current renderer using its deterministic showcase
+dataset, with no local metrics, session content, or script output. The physical LCD
+and Preview window use the same 1920×480 rendering path.</sub>
 
 > Fork of [beret21/MacTR](https://github.com/beret21/MacTR), reworked around a central
 > **AI Agents** panel that tracks [Claude Code](https://claude.com/claude-code) and
@@ -30,9 +30,10 @@ for each agent, side by side:
 
 - **Current project** and the **last thing it said** — Markdown tables in the message are
   rendered as real aligned tables, not raw `| … |` text.
-- **Plan / step progress** — `步骤 4/6` badge + a segmented progress bar, parsed from
+- **Plan / step progress** — a localized `步骤 4/6` / `Step 4/6` badge plus a segmented progress bar, parsed from
   Codex `update_plan` and Claude `TodoWrite`. Stale plans from a finished turn disappear.
-- **Today's token usage** — total + In/Out, in a compact `万 / 亿` format.
+- **Today's token usage** — total + In/Out, using compact `万 / 亿` in Chinese and
+  K / M / B in English.
 - **Codex remaining quota** — % left + reset countdown, tracked across all recent sessions.
 - **Live status** — the column **breathes** while an agent is working and **flashes** for
   ~10 s when it finishes a turn or needs your input.
@@ -65,6 +66,9 @@ narrower without removing project, message, step, token, or quota details.
 - The card displays plain-text stdout/stderr only, capped at 8 KB with ANSI controls removed.
 - Runs never overlap and time out automatically. A failure keeps the last successful
   output visible alongside the error state.
+- Text sizing offers Auto / Small / Medium / Large. Auto picks the largest font
+  that fully fits and vertically centers short output, gives six-digit codes a
+  large centered treatment, and scales or safely truncates long text.
 
 ### 🐱⚡ Desk pets that react to activity
 - A **Bongo Cat** taps its keyboard while your agents work (and dozes when idle).
@@ -82,6 +86,9 @@ narrower without removing project, message, step, token, or quota details.
   automatically while the LCD is disconnected.
 - **Menu bar app** — runs in the background with no Dock icon; closing Preview or
   Settings does not quit it.
+- **Bilingual interface** — Simplified Chinese is the first-run default. Switch to
+  English from the menu bar or Settings → General; menus, Settings, status messages,
+  and the LCD dashboard update immediately, and the choice persists.
 
 Performance modes trade animation smoothness and metric freshness for resource use.
 The USB output remains 1920×480 in every mode.
@@ -99,6 +106,8 @@ log size, and telemetry availability affect the result.
 ### 🕘 Menu bar, login launch, and daily scheduling
 
 - Pause/resume LCD output, reconnect, preview, and open Settings from the menu bar.
+- Choose 简体中文 or English from the menu-bar Language submenu or the picker at the
+  top of General Settings; no restart is required.
 - Uses macOS `SMAppService` for Launch at Login—no hand-written LaunchAgent.
 - A daily schedule can pause output at one time and resume at another, including
   overnight active windows.
@@ -109,7 +118,7 @@ log size, and telemetry availability affect the result.
 <table>
   <tr>
     <td width="36%"><img src="img/menu-bar-v1.4.1.png" alt="MacTR native menu-bar controls"></td>
-    <td width="64%"><img src="img/settings-v1.4.1.png" alt="MacTR settings and custom card"></td>
+    <td width="64%"><img src="img/settings-v1.4.1.png" alt="MacTR Simplified Chinese language settings"></td>
   </tr>
 </table>
 
@@ -241,6 +250,7 @@ Use `packaging/build-release.sh` for a transferable private build.
 .build/release/MacTR --preview       # force the on-Mac preview window
 .build/release/MacTR --demo          # drive the LCD with the built-in showcase dataset
 .build/release/MacTR --snapshot x.png --cores 10   # render one demo frame to a PNG
+.build/release/MacTR --snapshot x.png --cores 10 --language en  # render the English dashboard
 .build/release/MacTR --snapshot x.png --redact-agents   # real metrics + redacted session text
 .build/release/MacTR --gif x.gif --frames 48 --fps 12 --scale 2   # animated demo GIF
 .build/release/MacTR --benchmark 120 # measure achievable LCD frame rate

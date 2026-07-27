@@ -5,7 +5,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>MacTR</string>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>en</string>
+	<string>zh-Hans</string>
 	<key>CFBundleExecutable</key>
 	<string>MacTR</string>
 	<key>CFBundleIconFile</key>
@@ -14,6 +14,11 @@
 	<string>com.beret21.MacTR</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hans</string>
+		<string>en</string>
+	</array>
 	<key>CFBundleName</key>
 	<string>MacTR</string>
 	<key>CFBundlePackageType</key>

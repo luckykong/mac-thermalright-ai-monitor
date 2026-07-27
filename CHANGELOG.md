@@ -4,6 +4,18 @@ All notable changes to MacTR are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added a persistent runtime language picker for Simplified Chinese and English.
+  Simplified Chinese is the first-run default, and both Settings and the menu bar
+  can switch the entire app and LCD dashboard without restarting.
+- Added localized runtime/device states, daily-schedule descriptions, dashboard
+  labels, time units, and language-specific compact token formats.
+- Added persistent Auto / Small / Medium / Large custom-card text sizing. Auto
+  selects the largest fully fitting font, vertically centers short output, uses
+  a large centered treatment for six-digit codes, and safely scales or truncates
+  long text.
+
 ### Changed
 
 - Moved the animated fan rotor beside the RPM label so it no longer crowds Bongo Cat.

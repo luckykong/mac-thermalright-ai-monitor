@@ -3,6 +3,8 @@
 dist/
 *.o
 *.swiftmodule
+__pycache__/
+*.py[cod]
 
 # SwiftPM
 Package.resolved

@@ -49,4 +49,14 @@ final class LaunchAtLoginController {
 
         refresh()
     }
+
+    func localizedErrorMessage(language: AppLanguage) -> String? {
+        guard let errorMessage else { return nil }
+        if errorMessage == "Launch at Login is available in the packaged MacTR.app." {
+            return language.text(.packagedAppOnly)
+        }
+        // ServiceManagement errors are supplied by macOS and already follow the
+        // user's system language, so preserve them verbatim.
+        return errorMessage
+    }
 }

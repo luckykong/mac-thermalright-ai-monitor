@@ -35,14 +35,23 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
     private let networkGraphBars = 60
     private var performanceMode: PerformanceMode = .balanced
     private var customScriptConfiguration = CustomScriptConfiguration.disabled
+    private var customScriptFontMode: CustomScriptFontMode = .automatic
+    private var language: AppLanguage = .simplifiedChinese
 
     // Reusable CGContext — avoids allocating 3.6MB every 0.5s (prevents CG raster data leak)
     private var reusableCtx: CGContext?
 
-    private let dateFormatter: DateFormatter = {
+    private let englishDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US")
         formatter.dateFormat = "EEE · MMM d"
+        return formatter
+    }()
+
+    private let chineseDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_Hans_CN")
+        formatter.dateFormat = "M月d日 EEE"
         return formatter
     }()
 
@@ -82,10 +91,14 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
     func configure(
         performanceMode: PerformanceMode,
-        customScript: CustomScriptConfiguration
+        customScript: CustomScriptConfiguration,
+        language: AppLanguage,
+        customScriptFontMode: CustomScriptFontMode = .automatic
     ) {
         lock.lock()
         self.performanceMode = performanceMode
+        self.language = language
+        self.customScriptFontMode = customScriptFontMode
         let scriptChanged = customScript != customScriptConfiguration
         customScriptConfiguration = customScript
         let running = metricsRunning
@@ -262,15 +275,24 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let networkSampleInterval: Double
     }
 
-    private func documentationAgents() -> AgentsSnapshot {
-        AgentsSnapshot(
+    private func documentationAgents(language: AppLanguage) -> AgentsSnapshot {
+        let claudeActivity = language == .simplifiedChinese
+            ? "已完成今日任务，等待下一步指令。"
+            : "Today's task is complete. Waiting for the next instruction."
+        let codexActivity = language == .simplifiedChinese
+            ? "正在验证显示布局、性能与发布包。"
+            : "Validating the display layout, performance, and release package."
+        let codexStep = language == .simplifiedChinese
+            ? "验证真实 LCD 输出"
+            : "Validate output on the physical LCD"
+        return AgentsSnapshot(
             claude: AgentUsage(
                 available: true,
                 todayInputTokens: 8_420_000,
                 todayOutputTokens: 126_000,
                 secondsSinceActive: 180,
                 project: "example-project",
-                activity: "已完成今日任务，等待下一步指令。",
+                activity: claudeActivity,
                 needsAttention: false,
                 isWorking: false),
             codex: AgentUsage(
@@ -279,14 +301,14 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                 todayOutputTokens: 284_000,
                 secondsSinceActive: 4,
                 project: "dashboard",
-                activity: "正在验证显示布局、性能与发布包。",
+                activity: codexActivity,
                 quotaUsedPercent: 34,
                 quotaResetsAt: Date().addingTimeInterval(6 * 86400),
                 needsAttention: false,
                 isWorking: true,
                 stepCurrent: 4,
                 stepTotal: 6,
-                stepText: "验证真实 LCD 输出"))
+                stepText: codexStep))
     }
 
     private func documentationScript() -> CustomScriptSnapshot {
@@ -301,7 +323,10 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
     /// Deterministic showcase data. CPU cores gently wave over time so the demo looks
     /// alive on the LCD; everything else is fixed so documentation stays reproducible.
-    private func demoData(coreCount requestedCoreCount: Int = 10) -> DashboardData {
+    private func demoData(
+        coreCount requestedCoreCount: Int = 10,
+        language: AppLanguage
+    ) -> DashboardData {
         let tt = Date().timeIntervalSince1970
         let coreCount = max(requestedCoreCount, 1)
         let cores: [Double] = (0..<coreCount).map { i in
@@ -342,43 +367,71 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             ])
         let temp = TemperatureSnapshot(cpuTemp: 52, gpuTemp: 45, thermalState: 0)
         let sys = SystemSnapshot(uptimeSeconds: 27 * 3600 + 3 * 60, processCount: 612)
+        let claudeActivity = language == .simplifiedChinese
+            ? """
+              已完成 AI Agents 面板的三项优化，改动集中在两个文件：
+
+              | 文件 | 改动 |
+              |---|---|
+              | Collector | 解析消息与待办 |
+              | Renderer | 表格化排版 |
+              """
+            : """
+              Completed three AI Agents panel improvements across two files:
+
+              | File | Change |
+              |---|---|
+              | Collector | Parse messages and plans |
+              | Renderer | Structured table layout |
+              """
+        let codexActivity = language == .simplifiedChinese
+            ? """
+              已完成部署，四个服务全部推送到 `main`：
+
+              | 服务 | 提交 | 文件 |
+              |---|---|---:|
+              | `api-gateway` | `a4872c56` | 24 |
+              | `auth-service` | `4d6934de` | 10 |
+              | `web-client` | `9b0e17aa` | 32 |
+              | `job-worker` | `ac02bea6` | 88 |
+              """
+            : """
+              Deployment completed. All four services were pushed to `main`:
+
+              | Service | Commit | Files |
+              |---|---|---:|
+              | `api-gateway` | `a4872c56` | 24 |
+              | `auth-service` | `4d6934de` | 10 |
+              | `web-client` | `9b0e17aa` | 32 |
+              | `job-worker` | `ac02bea6` | 88 |
+              """
         let agents = AgentsSnapshot(
             claude: AgentUsage(available: true,
                                todayInputTokens: 48_300_000, todayOutputTokens: 512_000,
                                secondsSinceActive: 3, project: "MacTR",
-                               activity: """
-                               已完成 AI Agents 面板的三项优化，改动集中在两个文件：
-
-                               | 文件 | 改动 |
-                               |---|---|
-                               | Collector | 解析消息与待办 |
-                               | Renderer | 表格化排版 |
-                               """,
+                               activity: claudeActivity,
                                isWorking: true,
                                stepCurrent: 3, stepTotal: 4,
-                               stepText: "渲染 Claude 消息表格"),
+                               stepText: language == .simplifiedChinese
+                                   ? "渲染 Claude 消息表格"
+                                   : "Render the Claude message table"),
             codex: AgentUsage(available: true,
                               todayInputTokens: 60_100_000, todayOutputTokens: 375_000,
                               secondsSinceActive: 6, project: "web-service",
-                              activity: """
-                              已完成部署，四个服务全部推送到 `main`：
-
-                              | 服务 | 提交 | 文件 |
-                              |---|---|---:|
-                              | `api-gateway` | `a4872c56` | 24 |
-                              | `auth-service` | `4d6934de` | 10 |
-                              | `web-client` | `9b0e17aa` | 32 |
-                              | `job-worker` | `ac02bea6` | 88 |
-                              """,
+                              activity: codexActivity,
                               quotaUsedPercent: 57,
                               quotaResetsAt: Date().addingTimeInterval(3600 * 24 * 6),
                               isWorking: true,
                               stepCurrent: 4, stepTotal: 6,
-                              stepText: "部署到预发环境并跑冒烟测试"))
+                              stepText: language == .simplifiedChinese
+                                  ? "部署到预发环境并跑冒烟测试"
+                                  : "Deploy to staging and run smoke tests"))
         let script = CustomScriptSnapshot(
             state: .succeeded,
-            title: "BACKUP",
-            output: "STATUS  OK\nREPOS   12\nLAST    19:30\nNEXT    20:00",
+            title: language == .simplifiedChinese ? "天气" : "WEATHER",
+            output: language == .simplifiedChinese
+                ? "广州 · 02:20\n未来两小时无降水\n当前 0  峰值 0\n2h累计 0 mm\n雨势············"
+                : "GUANGZHOU · 02:20\nNO RAIN FOR 2 HOURS\nNOW 0  PEAK 0\n2H TOTAL 0 mm\nRAIN ············",
             message: nil,
             lastRunAt: Date().addingTimeInterval(-30),
             exitCode: 0)
@@ -391,7 +444,11 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
     /// Render one demo frame with the showcase data (for --snapshot).
     func renderSimulated(coreCount: Int) -> CGImage? {
-        let data = demoData(coreCount: coreCount)
+        lock.lock()
+        let renderLanguage = language
+        let renderScriptFontMode = customScriptFontMode
+        lock.unlock()
+        let data = demoData(coreCount: coreCount, language: renderLanguage)
         let w = Layout.width, h = Layout.height
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
@@ -400,7 +457,11 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         else { return nil }
         ctx.translateBy(x: 0, y: CGFloat(h)); ctx.scaleBy(x: 1, y: -1)
         Draw.gradientBackground(ctx)
-        renderDashboard(ctx, data: data)
+        renderDashboard(
+            ctx,
+            data: data,
+            language: renderLanguage,
+            customScriptFontMode: renderScriptFontMode)
         return ctx.makeImage()
     }
 
@@ -413,16 +474,23 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         renderMutex.lock()
         defer { renderMutex.unlock() }
 
+        lock.lock()
+        let renderLanguage = language
+        let renderScriptFontMode = customScriptFontMode
+        lock.unlock()
+
         var data: DashboardData
         if demoMode {
-            data = demoData()
+            data = demoData(language: renderLanguage)
         } else {
             // Read cached metrics (never blocks — uses latest available values)
             lock.lock()
             guard let c = _cpu, let m = _mem, let tp = _temp, let a = _agents else {
                 lock.unlock(); return nil
             }
-            let visibleAgents = redactAgentDetails ? documentationAgents() : a
+            let visibleAgents = redactAgentDetails
+                ? documentationAgents(language: renderLanguage)
+                : a
             data = DashboardData(
                 cpu: c, mem: m, gpu: _gpu, network: _network, fans: _fans,
                 temp: tp, sys: _sys, agents: visibleAgents,
@@ -467,32 +535,55 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         // Background
         Draw.gradientBackground(ctx)
 
-        renderDashboard(ctx, data: data)
+        renderDashboard(
+            ctx,
+            data: data,
+            language: renderLanguage,
+            customScriptFontMode: renderScriptFontMode)
 
         let image = ctx.makeImage()
         ctx.restoreGState()
         return image
     }
 
-    private func renderDashboard(_ ctx: CGContext, data: DashboardData) {
+    private func renderDashboard(
+        _ ctx: CGContext,
+        data: DashboardData,
+        language: AppLanguage,
+        customScriptFontMode: CustomScriptFontMode
+    ) {
         let agentsBusy = data.agents.claude.isWorking || data.agents.claude.needsAttention
             || data.agents.codex.isWorking || data.agents.codex.needsAttention
-        renderCPU(ctx, cpu: data.cpu, temp: data.temp, agentsBusy: agentsBusy)
-        renderGPU(ctx, gpu: data.gpu, temp: data.temp)
-        renderMemory(ctx, mem: data.mem)
+        renderCPU(
+            ctx, cpu: data.cpu, temp: data.temp,
+            agentsBusy: agentsBusy, language: language)
+        renderGPU(ctx, gpu: data.gpu, temp: data.temp, language: language)
+        renderMemory(ctx, mem: data.mem, language: language)
         renderNetwork(
             ctx, network: data.network,
             rxHistory: data.rxHistory, txHistory: data.txHistory,
-            sampleInterval: data.networkSampleInterval)
-        renderCustomScript(ctx, snapshot: data.script)
-        renderClockAndFan(ctx, fans: data.fans, sys: data.sys, agentsBusy: agentsBusy)
-        renderAgents(ctx, agents: data.agents)
+            sampleInterval: data.networkSampleInterval,
+            language: language)
+        renderCustomScript(
+            ctx,
+            snapshot: data.script,
+            language: language,
+            fontMode: customScriptFontMode)
+        renderClockAndFan(
+            ctx, fans: data.fans, sys: data.sys,
+            agentsBusy: agentsBusy, language: language)
+        renderAgents(ctx, agents: data.agents, language: language)
     }
 
     // MARK: - Compact System Cards
 
-    private func renderCPU(_ ctx: CGContext, cpu: CPUSnapshot, temp: TemperatureSnapshot,
-                           agentsBusy: Bool) {
+    private func renderCPU(
+        _ ctx: CGContext,
+        cpu: CPUSnapshot,
+        temp: TemperatureSnapshot,
+        agentsBusy: Bool,
+        language: AppLanguage
+    ) {
         let x = Layout.systemTopX(0)
         let y = Layout.panelY
         let w = Layout.systemTopColumnWidth
@@ -506,7 +597,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             color: Color.forPercent(cpu.total), dark: Color.forPercentDark(cpu.total))
 
         let statX = x + 88
-        Draw.text(ctx, "TEMP", x: statX, y: y + 44,
+        Draw.text(ctx, language.text(.cpuTemperature), x: statX, y: y + 44,
                   font: Fonts.system(10, weight: .semibold), color: Color.textL)
         let tempString = temp.cpuTemp.map { String(format: "%.0f°C", $0) } ?? "N/A"
         let tempColor: CGColor
@@ -518,7 +609,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         Draw.text(ctx, tempString, x: statX, y: y + 57,
                   font: Fonts.system(17, weight: .bold), color: tempColor)
 
-        Draw.text(ctx, "LOAD 1M", x: statX, y: y + 81,
+        Draw.text(ctx, language.text(.cpuLoadOneMinute), x: statX, y: y + 81,
                   font: Fonts.system(10, weight: .semibold), color: Color.textL)
         Draw.text(ctx, String(format: "%.1f", cpu.loadAvg.0), x: statX, y: y + 94,
                   font: Fonts.system(17, weight: .semibold), color: Color.textS)
@@ -542,8 +633,12 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             x: x + 14, y: y + h - 27, w: w - 28, h: 13)
     }
 
-    private func renderGPU(_ ctx: CGContext, gpu: GPUSnapshot?,
-                           temp: TemperatureSnapshot) {
+    private func renderGPU(
+        _ ctx: CGContext,
+        gpu: GPUSnapshot?,
+        temp: TemperatureSnapshot,
+        language: AppLanguage
+    ) {
         let x = Layout.systemTopX(1)
         let y = Layout.panelY
         let w = Layout.systemTopColumnWidth
@@ -573,17 +668,19 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let sx = x + 91
         let sw = w - 105
         drawLabeledMiniBar(
-            ctx, label: "RENDER", value: Double(gpu.rendererUtil),
+            ctx, label: language.text(.gpuRender), value: Double(gpu.rendererUtil),
             x: sx, y: y + 43, w: sw, color: Color.magenta)
         drawLabeledMiniBar(
-            ctx, label: "TILER", value: Double(gpu.tilerUtil),
+            ctx, label: language.text(.gpuTiler), value: Double(gpu.tilerUtil),
             x: sx, y: y + 75, w: sw, color: Color.purple)
 
         let usedGB = Double(gpu.memUsedMB) / 1024
         let allocGB = Double(gpu.memAllocMB) / 1024
         let memoryString = allocGB > 0
-            ? String(format: "MEM %.1f / %.1f GB", usedGB, allocGB)
-            : String(format: "MEM %.1f GB", usedGB)
+            ? String(
+                format: "\(language.text(.gpuMemory)) %.1f / %.1f GB",
+                usedGB, allocGB)
+            : String(format: "\(language.text(.gpuMemory)) %.1f GB", usedGB)
         Draw.text(ctx, memoryString, x: sx, y: y + 108,
                   font: Fonts.system(11, weight: .medium), color: Color.textS)
         if let gpuTemp = temp.gpuTemp {
@@ -595,7 +692,11 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         }
     }
 
-    private func renderMemory(_ ctx: CGContext, mem: MemorySnapshot) {
+    private func renderMemory(
+        _ ctx: CGContext,
+        mem: MemorySnapshot,
+        language: AppLanguage
+    ) {
         let x = Layout.systemTopX(2)
         let y = Layout.panelY
         let w = Layout.systemTopColumnWidth
@@ -607,7 +708,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let pressureColor = Color.forPressure(mem.pressure)
 
         Draw.panel(ctx, x: x, y: y, w: w, h: h, accent: Color.green)
-        Draw.text(ctx, "MEMORY", x: x + 14, y: y + 11,
+        Draw.text(ctx, language.text(.memory), x: x + 14, y: y + 11,
                   font: Fonts.system(18, weight: .bold), color: Color.green)
         Draw.text(ctx, String(format: "%.0f GB", totalGB), x: x + w - 62, y: y + 14,
                   font: Fonts.system(11, weight: .medium), color: Color.textL)
@@ -616,8 +717,10 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             ctx, cx: x + 48, cy: y + 76, percent: pct,
             color: pressureColor, dark: Color.forPressureDark(mem.pressure))
 
-        let pressureText = mem.pressure >= 4 ? "CRITICAL"
-            : (mem.pressure >= 2 ? "PRESSURE" : "NORMAL")
+        let pressureText = mem.pressure >= 4 ? language.text(.memoryCritical)
+            : (mem.pressure >= 2
+                ? language.text(.memoryPressure)
+                : language.text(.memoryNormal))
         Draw.text(ctx, pressureText, x: x + 91, y: y + 43,
                   font: Fonts.system(11, weight: .bold), color: pressureColor)
         Draw.text(ctx, String(format: "%.1f / %.0f GB", usedGB, totalGB),
@@ -629,7 +732,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let compressedGB = Double(mem.compressed) / bytesPerGB
         let availableGB = Double(mem.available) / bytesPerGB
         let breakdown = String(
-            format: "A %.1f  W %.1f  C %.1f  F %.1f", activeGB, wiredGB,
+            format: language.text(.memoryBreakdown), activeGB, wiredGB,
             compressedGB, availableGB)
         Draw.text(ctx, breakdown, x: x + 14, y: y + 99,
                   font: Fonts.system(10, weight: .medium), color: Color.textS)
@@ -645,7 +748,8 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         network: NetworkSnapshot?,
         rxHistory: [Double],
         txHistory: [Double],
-        sampleInterval: Double
+        sampleInterval: Double,
+        language: AppLanguage
     ) {
         let x = Layout.networkX
         let y = Layout.systemBottomY
@@ -653,10 +757,15 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let h = Layout.systemBottomHeight
 
         Draw.panel(ctx, x: x, y: y, w: w, h: h, accent: Color.cyan)
-        Draw.text(ctx, "NETWORK", x: x + 14, y: y + 11,
+        Draw.text(ctx, language.text(.network), x: x + 14, y: y + 11,
                   font: Fonts.system(18, weight: .bold), color: Color.cyan)
-        Draw.text(ctx, "30 SEC", x: x + w - 57, y: y + 15,
-                  font: Fonts.system(10, weight: .semibold), color: Color.textD)
+        let rangeLabel = language.text(.thirtySeconds)
+        let rangeFont = Fonts.system(10, weight: .semibold)
+        let rangeWidth = (rangeLabel as NSString)
+            .size(withAttributes: [.font: rangeFont]).width
+        Draw.text(
+            ctx, rangeLabel, x: Int(CGFloat(x + w - 14) - rangeWidth), y: y + 15,
+            font: rangeFont, color: Color.textD)
 
         guard let network, network.available else {
             Draw.centeredText(ctx, "N/A", cx: x + w / 2, y: y + 116,
@@ -664,8 +773,8 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             return
         }
 
-        let down = "DOWN \(Draw.formatBytesPerSec(network.rxBytesPerSec))"
-        let up = "UP \(Draw.formatBytesPerSec(network.txBytesPerSec))"
+        let down = "\(language.text(.download)) \(Draw.formatBytesPerSec(network.rxBytesPerSec))"
+        let up = "\(language.text(.upload)) \(Draw.formatBytesPerSec(network.txBytesPerSec))"
         let downColor = Color.forNetworkRate(
             network.rxBytesPerSec, normal: Color.green)
         let upColor = Color.forNetworkRate(
@@ -711,7 +820,9 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
     private func renderCustomScript(
         _ ctx: CGContext,
-        snapshot: CustomScriptSnapshot
+        snapshot: CustomScriptSnapshot,
+        language: AppLanguage,
+        fontMode: CustomScriptFontMode
     ) {
         let x = Layout.scriptX
         let y = Layout.systemBottomY
@@ -731,17 +842,17 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let stateColor: CGColor
         switch snapshot.state {
         case .succeeded:
-            stateText = "OK"; stateColor = Color.green
+            stateText = language.text(.scriptStateOK); stateColor = Color.green
         case .running:
-            stateText = "RUN"; stateColor = Color.cyan
+            stateText = language.text(.scriptStateRun); stateColor = Color.cyan
         case .failed, .timedOut, .missing, .invalid:
-            stateText = "ERROR"; stateColor = Color.red
+            stateText = language.text(.scriptStateError); stateColor = Color.red
         case .ready:
-            stateText = "READY"; stateColor = Color.textS
+            stateText = language.text(.scriptStateReady); stateColor = Color.textS
         case .disabled:
-            stateText = "OFF"; stateColor = Color.textD
+            stateText = language.text(.scriptStateOff); stateColor = Color.textD
         case .unconfigured:
-            stateText = "SETUP"; stateColor = Color.orange
+            stateText = language.text(.scriptStateSetup); stateColor = Color.orange
         }
         let stateFont = Fonts.system(11, weight: .bold)
         let stateWidth = (stateText as NSString)
@@ -753,14 +864,16 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                   font: stateFont, color: stateColor)
 
         if snapshot.state == .disabled || snapshot.state == .unconfigured {
-            let primary = snapshot.state == .disabled ? "SCRIPT OFF" : "ADD SCRIPT"
+            let primary = snapshot.state == .disabled
+                ? language.text(.scriptOff) : language.text(.addScript)
             Draw.centeredText(ctx, primary, cx: x + w / 2, y: y + 104,
                               font: Fonts.system(25, weight: .semibold),
                               color: snapshot.state == .disabled ? Color.textD : Color.orange)
             Draw.centeredText(
                 ctx,
                 snapshot.state == .disabled
-                    ? "Enable in Settings" : "Settings › Custom Card",
+                    ? language.text(.enableInSettings)
+                    : language.text(.customCardSettingsPath),
                 cx: x + w / 2, y: y + 139,
                 font: Fonts.system(13, weight: .medium), color: Color.textL)
             return
@@ -780,28 +893,55 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         }
 
         let output = snapshot.output.isEmpty
-            ? (snapshot.state == .running ? "Running…" : "(no output)")
+            ? (snapshot.state == .running
+                ? language.text(.runningEllipsis)
+                : language.text(.noOutput))
             : snapshot.output
-        let outputFont = Fonts.mono(15)
-        let lineHeight = 21
-        let maxLines = max((y + h - 37 - bodyY) / lineHeight, 1)
-        var lines: [String] = []
-        for rawLine in output.components(separatedBy: "\n") {
-            lines.append(contentsOf: wrap(
-                rawLine, font: outputFont, maxW: CGFloat(w - 28),
-                maxLines: max(maxLines - lines.count, 1)))
-            if lines.count >= maxLines { break }
-        }
-        for (index, line) in lines.prefix(maxLines).enumerated() {
-            Draw.text(ctx, line, x: x + 14, y: bodyY + index * lineHeight,
-                      font: outputFont, color: Color.textS)
+        let availableHeight = max(y + h - 37 - bodyY, 1)
+        let textLayout = CustomScriptTypography.layout(
+            output: output,
+            mode: fontMode,
+            maxWidth: CGFloat(w - 28),
+            availableHeight: availableHeight)
+        let outputFont = Fonts.mono(textLayout.fontSize)
+        bodyY += textLayout.topInset
+        for (index, line) in textLayout.lines.enumerated() {
+            let lineY = bodyY + index * textLayout.lineHeight
+            if textLayout.centered {
+                Draw.centeredText(
+                    ctx,
+                    line,
+                    cx: x + w / 2,
+                    y: lineY,
+                    font: outputFont,
+                    color: Color.textW)
+            } else {
+                Draw.text(
+                    ctx,
+                    line,
+                    x: x + 14,
+                    y: lineY,
+                    font: outputFont,
+                    color: Color.textW)
+            }
         }
 
         if let lastRunAt = snapshot.lastRunAt {
             let age = max(0, Int(Date().timeIntervalSince(lastRunAt)))
-            let ageText = age < 60 ? "\(age)s ago"
-                : (age < 3600 ? "\(age / 60)m ago" : "\(age / 3600)h ago")
-            Draw.text(ctx, "LAST \(ageText)", x: x + 14, y: y + h - 27,
+            let ageText: String
+            if age < 60 {
+                ageText = language == .simplifiedChinese
+                    ? "\(age) 秒前" : "\(age)s ago"
+            } else if age < 3600 {
+                ageText = AppLocalization.format(
+                    .minutesAgo, language: language, age / 60)
+            } else {
+                ageText = AppLocalization.format(
+                    .hoursAgo, language: language, age / 3600)
+            }
+            let lastRunText = AppLocalization.format(
+                .lastRun, language: language, ageText)
+            Draw.text(ctx, lastRunText, x: x + 14, y: y + h - 27,
                       font: Fonts.system(10, weight: .semibold), color: Color.textD)
         }
     }
@@ -810,7 +950,8 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         _ ctx: CGContext,
         fans: FanSnapshot?,
         sys: SystemSnapshot?,
-        agentsBusy: Bool
+        agentsBusy: Bool,
+        language: AppLanguage
     ) {
         let x = Layout.clockX
         let y = Layout.systemBottomY
@@ -819,8 +960,11 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
         Draw.panel(ctx, x: x, y: y, w: w, h: h, accent: Color.orange)
         let now = Date()
+        let dateText = language == .simplifiedChinese
+            ? chineseDateFormatter.string(from: now)
+            : englishDateFormatter.string(from: now).uppercased()
         Draw.centeredText(
-            ctx, dateFormatter.string(from: now).uppercased(),
+            ctx, dateText,
             cx: x + w / 2, y: y + 15,
             font: Fonts.system(12, weight: .semibold), color: Color.textS)
 
@@ -840,9 +984,19 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         if let sys {
             let hours = sys.uptimeSeconds / 3600
             let minutes = (sys.uptimeSeconds % 3600) / 60
-            let uptime = hours >= 24
-                ? "\(hours / 24)d \(hours % 24)h" : "\(hours)h \(minutes)m"
-            Draw.centeredText(ctx, "UP \(uptime) · \(sys.processCount) PROCS",
+            let uptime: String
+            if language == .simplifiedChinese {
+                uptime = hours >= 24
+                    ? "\(hours / 24)天 \(hours % 24)时"
+                    : "\(hours)时 \(minutes)分"
+            } else {
+                uptime = hours >= 24
+                    ? "\(hours / 24)d \(hours % 24)h"
+                    : "\(hours)h \(minutes)m"
+            }
+            let summary = AppLocalization.format(
+                .uptimeSummary, language: language, uptime, sys.processCount)
+            Draw.centeredText(ctx, summary,
                               cx: x + w / 2, y: y + 108,
                               font: Fonts.system(10, weight: .medium),
                               color: Color.textL)
@@ -854,7 +1008,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let showFanRotor: Bool
         if let fans, fans.available {
             if fans.fans.isEmpty {
-                fanLabel = "FANLESS"
+                fanLabel = language.text(.fanless)
                 fanColor = Color.textD
                 fanTurnsPerSecond = 0
                 showFanRotor = false
@@ -869,7 +1023,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                 showFanRotor = true
             }
         } else {
-            fanLabel = "FAN N/A"
+            fanLabel = language.text(.fanUnavailable)
             fanColor = Color.textD
             fanTurnsPerSecond = 0
             showFanRotor = false
@@ -1149,14 +1303,18 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
     // MARK: - AI Agents Panel
 
-    private func renderAgents(_ ctx: CGContext, agents: AgentsSnapshot) {
+    private func renderAgents(
+        _ ctx: CGContext,
+        agents: AgentsSnapshot,
+        language: AppLanguage
+    ) {
         let x = Layout.agentsX
         let pw = Layout.agentsWidth
         let py = Layout.panelY
         let ph = Layout.panelHeight
 
         Draw.panel(ctx, x: x, y: py, w: pw, h: ph, accent: Color.purple)
-        Draw.text(ctx, "AI AGENTS", x: x + 20, y: py + 14,
+        Draw.text(ctx, language.text(.aiAgents), x: x + 20, y: py + 14,
                   font: Fonts.system(22, weight: .bold), color: Color.purple)
 
         // Vertical divider between columns
@@ -1166,13 +1324,16 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
         let colW = pw / 2 - 40
         renderAgentColumn(ctx, x: x + 22, w: colW, py: py,
-                          name: "CLAUDE", accent: Color.claude, usage: agents.claude)
+                          name: "CLAUDE", accent: Color.claude,
+                          usage: agents.claude, language: language)
         renderAgentColumn(ctx, x: midX + 18, w: colW, py: py,
-                          name: "CODEX", accent: Color.cyan, usage: agents.codex)
+                          name: "CODEX", accent: Color.cyan,
+                          usage: agents.codex, language: language)
     }
 
     private func renderAgentColumn(_ ctx: CGContext, x: Int, w: Int, py: Int,
-                                   name: String, accent: CGColor, usage: AgentUsage) {
+                                   name: String, accent: CGColor, usage: AgentUsage,
+                                   language: AppLanguage) {
         let ph = Layout.panelHeight
 
         // Column background — three states, agent-tinted:
@@ -1220,13 +1381,22 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let active = (usage.secondsSinceActive ?? Int.max) < 90
         let agoStr: String
         if !usage.available {
-            agoStr = "not found"
+            agoStr = language.text(.notFound)
         } else if let s = usage.secondsSinceActive {
-            agoStr = active ? "now"
-                : (s < 3600 ? "\(s / 60)m ago"
-                   : (s < 86400 ? "\(s / 3600)h ago" : "\(s / 86400)d ago"))
+            if active {
+                agoStr = language.text(.now)
+            } else if s < 3600 {
+                agoStr = AppLocalization.format(
+                    .minutesAgo, language: language, s / 60)
+            } else if s < 86400 {
+                agoStr = AppLocalization.format(
+                    .hoursAgo, language: language, s / 3600)
+            } else {
+                agoStr = AppLocalization.format(
+                    .daysAgo, language: language, s / 86400)
+            }
         } else {
-            agoStr = "no session"
+            agoStr = language.text(.noSession)
         }
         let agoFont = Fonts.system(15, weight: .medium)
         let agoColor = active ? Color.green : Color.textD
@@ -1245,7 +1415,8 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             // Step badge "步骤 4/6" right-aligned on the project line, when a plan exists
             var projMaxW = CGFloat(w)
             if let cur = usage.stepCurrent, let total = usage.stepTotal {
-                let badge = "步骤 \(cur)/\(total)"
+                let badge = AppLocalization.format(
+                    .step, language: language, cur, total)
                 let bFont = Fonts.system(16, weight: .semibold)
                 let bW = (badge as NSString).size(withAttributes: [.font: bFont]).width
                 Draw.text(ctx, badge, x: Int(CGFloat(x + w) - bW), y: y + 4,
@@ -1267,7 +1438,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
         // Latest message — what the agent last said (never the commands it ran).
         // Markdown tables/lists are laid out structurally; plain text just wraps.
-        let actText = usage.activity ?? (usage.available ? "空闲" : "—")
+        let actText = usage.activity ?? (usage.available ? language.text(.idle) : "—")
         let msgBottom = py + ph - 140   // token divider sits here
         renderMessage(ctx, text: actText, x: x, y: y, w: w, bottom: msgBottom, accent: accent)
 
@@ -1275,20 +1446,21 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let tokY = py + ph - 126
         Draw.line(ctx, from: CGPoint(x: x, y: tokY - 12),
                   to: CGPoint(x: x + w, y: tokY - 12), color: Color.border)
-        Draw.text(ctx, "今日 Token", x: x, y: tokY,
+        Draw.text(ctx, language.text(.todayTokens), x: x, y: tokY,
                   font: Fonts.system(17), color: Color.textL)
-        Draw.text(ctx, formatTokensCN(usage.todayTotalTokens), x: x, y: tokY + 24,
+        Draw.text(ctx, formatTokens(usage.todayTotalTokens, language: language),
+                  x: x, y: tokY + 24,
                   font: Fonts.system(40, weight: .bold), color: Color.textW)
 
         // In / Out — right-aligned, level with the label + big number
         let ioFont = Fonts.system(18, weight: .medium)
         let ioRows: [(String, UInt64)] = [
-            ("In", usage.todayInputTokens),
-            ("Out", usage.todayOutputTokens),
+            (language.text(.tokenInput), usage.todayInputTokens),
+            (language.text(.tokenOutput), usage.todayOutputTokens),
         ]
         for (i, row) in ioRows.enumerated() {
             let ry = tokY + 6 + i * 30
-            let valStr = formatTokensCN(row.1)
+            let valStr = formatTokens(row.1, language: language)
             let valW = (valStr as NSString).size(withAttributes: [.font: ioFont]).width
             Draw.text(ctx, valStr, x: Int(CGFloat(x + w) - valW), y: ry,
                       font: ioFont, color: Color.textS)
@@ -1303,12 +1475,25 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             let qColor: CGColor = remaining > 50 ? Color.green
                 : (remaining > 20 ? Color.orange : Color.red)
             let qy = tokY + 78
-            Draw.text(ctx, String(format: "剩余额度 %.0f%%", remaining), x: x, y: qy,
+            Draw.text(
+                ctx,
+                AppLocalization.format(
+                    .quotaRemaining, language: language, remaining),
+                x: x, y: qy,
                       font: Fonts.system(18, weight: .medium), color: qColor)
             if let resets = usage.quotaResetsAt {
                 let secs = max(0, Int(resets.timeIntervalSinceNow))
-                let resetStr = secs >= 86400 ? "\(secs / 86400)天后重置"
-                    : (secs >= 3600 ? "\(secs / 3600)小时后重置" : "\(max(secs / 60, 1))分钟后重置")
+                let resetStr: String
+                if secs >= 86400 {
+                    resetStr = AppLocalization.format(
+                        .resetDays, language: language, secs / 86400)
+                } else if secs >= 3600 {
+                    resetStr = AppLocalization.format(
+                        .resetHours, language: language, secs / 3600)
+                } else {
+                    resetStr = AppLocalization.format(
+                        .resetMinutes, language: language, max(secs / 60, 1))
+                }
                 let rFont = Fonts.system(15)
                 let rW = (resetStr as NSString).size(withAttributes: [.font: rFont]).width
                 Draw.text(ctx, resetStr, x: Int(CGFloat(x + w) - rW), y: qy + 3,
@@ -1343,9 +1528,25 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         }
     }
 
-    /// 中文数量格式："33.99万"、"1.02亿"。1万以下显示原始数字。
-    private func formatTokensCN(_ n: UInt64) -> String {
+    /// Locale-aware compact token quantities. Chinese uses 万/亿 while English
+    /// uses K/M/B, keeping the large total readable in the same fixed-width area.
+    private func formatTokens(_ n: UInt64, language: AppLanguage) -> String {
         let v = Double(n)
+        if language == .english {
+            if v >= 1e9 {
+                let b = v / 1e9
+                return String(format: b < 100 ? "%.2fB" : "%.1fB", b)
+            }
+            if v >= 1e6 {
+                let m = v / 1e6
+                return String(format: m < 100 ? "%.2fM" : "%.1fM", m)
+            }
+            if v >= 1e3 {
+                let k = v / 1e3
+                return String(format: k < 100 ? "%.2fK" : "%.1fK", k)
+            }
+            return "\(n)"
+        }
         if v >= 1e8 {
             let y = v / 1e8
             return String(format: y < 100 ? "%.2f亿" : "%.1f亿", y)

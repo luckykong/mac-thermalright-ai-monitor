@@ -9,6 +9,7 @@ extension Notification.Name {
 
 enum AppPreferenceNotification {
     static let key = "preferenceKey"
+    static let languageKey = "appLanguage"
 }
 
 enum ScheduleCloseAction: String, CaseIterable, Identifiable, Sendable {
@@ -17,10 +18,10 @@ enum ScheduleCloseAction: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    var title: String {
+    func title(language: AppLanguage) -> String {
         switch self {
-        case .pauseDisplay: "Pause display output"
-        case .quitApp: "Quit MacTR"
+        case .pauseDisplay: language.text(.pauseDisplayOutput)
+        case .quitApp: language.text(.quitMacTR)
         }
     }
 }
@@ -32,19 +33,19 @@ enum PerformanceMode: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    var title: String {
+    func title(language: AppLanguage) -> String {
         switch self {
-        case .eco: "Eco"
-        case .balanced: "Balanced"
-        case .smooth: "Smooth"
+        case .eco: language.text(.eco)
+        case .balanced: language.text(.balanced)
+        case .smooth: language.text(.smooth)
         }
     }
 
-    var detail: String {
+    func detail(language: AppLanguage) -> String {
         switch self {
-        case .eco: "Lowest CPU use; 0.5–2 fps with slower metric refresh."
-        case .balanced: "Recommended for always-on use; 1–4 fps."
-        case .smooth: "Smoother 2–10 fps animation with higher CPU use."
+        case .eco: language.text(.ecoDetail)
+        case .balanced: language.text(.balancedDetail)
+        case .smooth: language.text(.smoothDetail)
         }
     }
 
@@ -97,10 +98,29 @@ enum PerformanceMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum CustomScriptFontMode: String, CaseIterable, Identifiable, Sendable {
+    case automatic
+    case small
+    case medium
+    case large
+
+    var id: String { rawValue }
+
+    func title(language: AppLanguage) -> String {
+        switch self {
+        case .automatic: language.text(.fontAutomatic)
+        case .small: language.text(.fontSmall)
+        case .medium: language.text(.fontMedium)
+        case .large: language.text(.fontLarge)
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class AppPreferences {
     private enum Key {
+        static let language = AppPreferenceNotification.languageKey
         static let displaySet = "displaySet"
         static let brightness = "brightness"
         static let refreshInterval = "refreshInterval"
@@ -116,9 +136,14 @@ final class AppPreferences {
         static let customScriptPath = "customScriptPath"
         static let customScriptDisplayName = "customScriptDisplayName"
         static let customScriptIntervalSeconds = "customScriptIntervalSeconds"
+        static let customScriptFontMode = "customScriptFontMode"
     }
 
     private let defaults: UserDefaults
+
+    var language: AppLanguage {
+        didSet { save(language.rawValue, forKey: Key.language) }
+    }
 
     var currentSet: DisplaySet {
         didSet { save(currentSet.rawValue, forKey: Key.displaySet) }
@@ -234,6 +259,10 @@ final class AppPreferences {
         }
     }
 
+    var customScriptFontMode: CustomScriptFontMode {
+        didSet { save(customScriptFontMode.rawValue, forKey: Key.customScriptFontMode) }
+    }
+
     var customScriptConfiguration: CustomScriptConfiguration {
         CustomScriptConfiguration(
             enabled: customScriptEnabled,
@@ -244,6 +273,16 @@ final class AppPreferences {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+
+        if let rawLanguage = defaults.string(forKey: Key.language),
+           let savedLanguage = AppLanguage(rawValue: rawLanguage)
+        {
+            language = savedLanguage
+        } else {
+            // MacTR intentionally defaults to Simplified Chinese regardless of
+            // the system language. English remains one click away in Settings/menu.
+            language = .simplifiedChinese
+        }
 
         if let rawSet = defaults.string(forKey: Key.displaySet),
            let set = DisplaySet(rawValue: rawSet)
@@ -297,6 +336,13 @@ final class AppPreferences {
                     ? 60 : defaults.integer(forKey: Key.customScriptIntervalSeconds),
                 5),
             86_400)
+        if let rawFontMode = defaults.string(forKey: Key.customScriptFontMode),
+           let fontMode = CustomScriptFontMode(rawValue: rawFontMode)
+        {
+            customScriptFontMode = fontMode
+        } else {
+            customScriptFontMode = .automatic
+        }
     }
 
     nonisolated static func normalizeMinutes(_ value: Int) -> Int {

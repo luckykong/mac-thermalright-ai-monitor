@@ -12,8 +12,8 @@
 
 ![仪表盘](img/dashboard.gif)
 
-<sub>上图由当前渲染器输出：系统指标来自已连接的 Mac；为避免公开本地会话，
-Agent 文本和自定义卡片使用脱敏示例。动画预览使用内置演示数据。</sub>
+<sub>上图均由当前渲染器使用内置的确定性演示数据生成，不包含本机指标、
+会话内容或脚本输出；实际 LCD 与预览窗口使用同一套 1920×480 渲染路径。</sub>
 
 > 基于 [beret21/MacTR](https://github.com/beret21/MacTR) 改造,核心是一块实时追踪
 > [Claude Code](https://claude.com/claude-code) 与 [Codex](https://openai.com/codex)
@@ -49,6 +49,9 @@ Agent 文本和自定义卡片使用脱敏示例。动画预览使用内置演�
 - `.sh`、`.zsh` 和 `.command` 通过系统 `/bin/zsh` 运行；其他文件必须有可执行权限和有效 shebang。
 - 只显示纯文本 `stdout/stderr`；输出上限 8 KB，ANSI 控制序列会移除。
 - 同一个脚本不会重叠执行，并会按间隔自动设置超时；失败时保留上一次成功输出并显示状态。
+- 正文字号可选“自动 / 小 / 中 / 大”。自动模式会选择能完整显示内容的最大字号并垂直
+  居中；短天气摘要会明显放大，6 位验证码使用大号居中排版，长文本则逐级缩小并在
+  超出容量时安全截断。
 
 ### 🐱⚡ 会互动的桌宠
 - **Bongo Cat**:agent 工作时在键盘上啪嗒啪嗒敲字,空闲时打盹。
@@ -62,6 +65,9 @@ Agent 文本和自定义卡片使用脱敏示例。动画预览使用内置演�
 - **USB 热插拔** —— 插拔、睡眠/唤醒后自动重连。
 - **本机预览** —— 可随时从菜单栏打开；也可选择在 LCD 断开时自动显示。
 - **菜单栏应用** —— 后台运行、无 Dock 图标，关闭预览和设置窗口不会退出。
+- **双语界面** —— 首次运行默认使用简体中文；可从菜单栏或“设置 → 通用”
+  随时切换为 English，菜单、设置窗口、状态提示和 LCD 仪表盘会立即同步更新。
+  语言选择会持久保存。
 
 性能模式的主要取舍是动画流畅度和指标时效性；USB 输出分辨率始终保持
 1920×480，不会因节能而降低画质。
@@ -78,6 +84,8 @@ Agent 文本和自定义卡片使用脱敏示例。动画预览使用内置演�
 ### 🕘 菜单栏、开机自启与定时
 
 - 在菜单栏直接暂停/恢复 LCD、重连设备、打开预览和设置。
+- 菜单栏的“语言”子菜单和设置页顶部均可选择“简体中文 / English”；
+  切换无需重启 App。
 - 使用 macOS 原生 `SMAppService` 设置登录时自动启动，无需手写 LaunchAgent。
 - 每日计划可在指定时间暂停 LCD，并在另一时间自动恢复；支持跨午夜时段。
 - 关闭动作也可以选择“退出整个 App”。退出后进程无法自行定时恢复，只能手动启动或等待下次登录自启。
@@ -86,7 +94,7 @@ Agent 文本和自定义卡片使用脱敏示例。动画预览使用内置演�
 <table>
   <tr>
     <td width="36%"><img src="img/menu-bar-v1.4.1.png" alt="MacTR 原生菜单栏控制"></td>
-    <td width="64%"><img src="img/settings-v1.4.1.png" alt="MacTR 设置与自定义卡片"></td>
+    <td width="64%"><img src="img/settings-v1.4.1.png" alt="MacTR 简体中文语言设置"></td>
   </tr>
 </table>
 
@@ -212,6 +220,7 @@ swift build -c release
 .build/release/MacTR --preview       # 强制打开本机预览窗口
 .build/release/MacTR --demo          # 用内置演示数据驱动 LCD
 .build/release/MacTR --snapshot x.png --cores 10        # 渲染一帧演示数据到 PNG
+.build/release/MacTR --snapshot x.png --cores 10 --language en  # 渲染英文仪表盘
 .build/release/MacTR --snapshot x.png --redact-agents   # 真实系统指标 + 脱敏会话文本
 .build/release/MacTR --gif x.gif --frames 48 --fps 12 --scale 2   # 生成演示 GIF
 .build/release/MacTR --benchmark 120 # 测量 LCD 可达帧率

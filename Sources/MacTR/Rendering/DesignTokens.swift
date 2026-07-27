@@ -52,6 +52,32 @@ enum Color {
     static func forPressureDark(_ level: Int) -> CGColor {
         level >= 4 ? redD : (level >= 2 ? orangeD : greenD)
     }
+
+    /// Network rate bands use the same decimal MB/s units shown by
+    /// `Draw.formatBytesPerSec`: normal through 5 MB/s, elevated above 5 MB/s,
+    /// and high above 10 MB/s.
+    static func networkRateBand(_ bytesPerSecond: Double) -> NetworkRateBand {
+        if bytesPerSecond > 10_000_000 { return .high }
+        if bytesPerSecond > 5_000_000 { return .elevated }
+        return .normal
+    }
+
+    static func forNetworkRate(
+        _ bytesPerSecond: Double,
+        normal normalColor: CGColor
+    ) -> CGColor {
+        switch networkRateBand(bytesPerSecond) {
+        case .normal: normalColor
+        case .elevated: orange
+        case .high: red
+        }
+    }
+}
+
+enum NetworkRateBand: Equatable {
+    case normal
+    case elevated
+    case high
 }
 
 // MARK: - Layout

@@ -666,12 +666,16 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
         let down = "DOWN \(Draw.formatBytesPerSec(network.rxBytesPerSec))"
         let up = "UP \(Draw.formatBytesPerSec(network.txBytesPerSec))"
+        let downColor = Color.forNetworkRate(
+            network.rxBytesPerSec, normal: Color.green)
+        let upColor = Color.forNetworkRate(
+            network.txBytesPerSec, normal: Color.cyan)
         let rateFont = Fonts.system(14, weight: .semibold)
         Draw.text(ctx, down, x: x + 14, y: y + 43,
-                  font: rateFont, color: Color.green)
+                  font: rateFont, color: downColor)
         let upWidth = (up as NSString).size(withAttributes: [.font: rateFont]).width
         Draw.text(ctx, up, x: Int(CGFloat(x + w - 14) - upWidth), y: y + 43,
-                  font: rateFont, color: Color.cyan)
+                  font: rateFont, color: upColor)
 
         // Pad startup history on the left so bar width stays stable instead of
         // rendering a handful of oversized columns during the first 30 seconds.
@@ -847,11 +851,13 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let fanLabel: String
         let fanColor: CGColor
         let fanTurnsPerSecond: Double
+        let showFanRotor: Bool
         if let fans, fans.available {
             if fans.fans.isEmpty {
                 fanLabel = "FANLESS"
                 fanColor = Color.textD
                 fanTurnsPerSecond = 0
+                showFanRotor = false
             } else {
                 let fan = fans.fans[0]
                 fanLabel = String(format: "%.0f RPM", fan.currentRPM)
@@ -860,27 +866,51 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                 let normalized = fan.percentOfMax.map { $0 / 100 }
                     ?? min(max(fan.currentRPM / 6_000, 0), 1)
                 fanTurnsPerSecond = 0.18 + normalized * 1.45
+                showFanRotor = true
             }
         } else {
             fanLabel = "FAN N/A"
             fanColor = Color.textD
             fanTurnsPerSecond = 0
+            showFanRotor = false
         }
-        Draw.centeredText(ctx, fanLabel, cx: x + w / 2, y: y + 142,
-                          font: Fonts.system(12, weight: .semibold), color: fanColor)
 
         let t = now.timeIntervalSince1970
+        let fanFont = Fonts.system(12, weight: .semibold)
+        let fanTextY = y + 142
+        if showFanRotor {
+            // Treat the rotor and RPM as one centered status row. This keeps the
+            // animation visually tied to its value and leaves clean air above
+            // Bongo Cat instead of making the rotor look like part of its head.
+            let rotorFootprint: CGFloat = 20
+            let rotorTextGap: CGFloat = 7
+            let labelWidth = (fanLabel as NSString)
+                .size(withAttributes: [.font: fanFont]).width
+            let rowWidth = rotorFootprint + rotorTextGap + labelWidth
+            let rowX = CGFloat(x) + (CGFloat(w) - rowWidth) / 2
+            drawFanRotor(
+                ctx,
+                center: CGPoint(
+                    x: rowX + rotorFootprint / 2,
+                    y: CGFloat(fanTextY) + 8),
+                radius: 8,
+                angle: CGFloat(t * fanTurnsPerSecond * 2 * .pi),
+                color: fanColor,
+                available: true)
+            Draw.text(
+                ctx, fanLabel,
+                x: Int(rowX + rotorFootprint + rotorTextGap), y: fanTextY,
+                font: fanFont, color: fanColor)
+        } else {
+            Draw.centeredText(
+                ctx, fanLabel, cx: x + w / 2, y: fanTextY,
+                font: fanFont, color: fanColor)
+        }
+
         let catScale: CGFloat = 0.54
         drawBongoCat(
             ctx, cx: x + w / 2, baseY: y + h - 12,
             tapping: agentsBusy, phase: Int(t * 5) % 2 == 0, scale: catScale)
-        drawFanRotor(
-            ctx,
-            center: CGPoint(x: x + w / 2 + 1, y: y + h - 62),
-            radius: 13,
-            angle: CGFloat(t * fanTurnsPerSecond * 2 * .pi),
-            color: fanColor,
-            available: fans?.available == true)
     }
 
     private func drawFanRotor(

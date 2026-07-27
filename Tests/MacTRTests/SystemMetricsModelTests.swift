@@ -44,6 +44,15 @@ struct SystemMetricsModelTests {
         #expect(delta.tx == 500)
     }
 
+    @Test("Network display changes band above 5 and 10 MB per second")
+    func networkRateBands() {
+        #expect(Color.networkRateBand(0) == .normal)
+        #expect(Color.networkRateBand(5_000_000) == .normal)
+        #expect(Color.networkRateBand(5_000_001) == .elevated)
+        #expect(Color.networkRateBand(10_000_000) == .elevated)
+        #expect(Color.networkRateBand(10_000_001) == .high)
+    }
+
     @Test("Fan percentage clamps and tolerates a missing maximum")
     func fanPercentage() {
         #expect(FanReading(

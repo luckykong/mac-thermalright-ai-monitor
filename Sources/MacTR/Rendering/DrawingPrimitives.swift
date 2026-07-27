@@ -202,6 +202,10 @@ enum Draw {
         let topMax = topValues.max() ?? 1
         let botMax = bottomValues.max() ?? 1
         let maxVal = max(topMax, botMax, 1)
+        let topNormalFill = topColor.copy(alpha: 0.8) ?? topColor
+        let bottomNormalFill = bottomColor.copy(alpha: 0.8) ?? bottomColor
+        let elevatedFill = Color.orange.copy(alpha: 0.8) ?? Color.orange
+        let highFill = Color.red.copy(alpha: 0.8) ?? Color.red
 
         // Center axis
         ctx.setStrokeColor(Color.border)
@@ -215,7 +219,12 @@ enum Draw {
             let barH = CGFloat(val / maxVal) * (halfH - 1)
             if barH < 0.5 { continue }
             let bx = CGFloat(x) + CGFloat(i) * barW
-            ctx.setFillColor(topColor.copy(alpha: 0.8) ?? topColor)
+            let fillColor: CGColor = switch Color.networkRateBand(val) {
+            case .normal: topNormalFill
+            case .elevated: elevatedFill
+            case .high: highFill
+            }
+            ctx.setFillColor(fillColor)
             ctx.fill(CGRect(x: bx, y: midY - barH, width: max(barW - 1, 1), height: barH))
         }
 
@@ -224,17 +233,26 @@ enum Draw {
             let barH = CGFloat(val / maxVal) * (halfH - 1)
             if barH < 0.5 { continue }
             let bx = CGFloat(x) + CGFloat(i) * barW
-            ctx.setFillColor(bottomColor.copy(alpha: 0.8) ?? bottomColor)
+            let fillColor: CGColor = switch Color.networkRateBand(val) {
+            case .normal: bottomNormalFill
+            case .elevated: elevatedFill
+            case .high: highFill
+            }
+            ctx.setFillColor(fillColor)
             ctx.fill(CGRect(x: bx, y: midY, width: max(barW - 1, 1), height: barH))
         }
 
         let calloutFont = Fonts.system(12, weight: .semibold)
+        let latestTopColor = Color.forNetworkRate(
+            topValues.last ?? 0, normal: topColor)
+        let latestBottomColor = Color.forNetworkRate(
+            bottomValues.last ?? 0, normal: bottomColor)
         drawChartCallout(
             ctx, topCallout, x: x + 6, y: y + 7,
-            font: calloutFont, color: topColor)
+            font: calloutFont, color: latestTopColor)
         drawChartCallout(
             ctx, bottomCallout, x: x + 6, y: Int(midY) + 7,
-            font: calloutFont, color: bottomColor)
+            font: calloutFont, color: latestBottomColor)
     }
 
     private static func drawChartCallout(

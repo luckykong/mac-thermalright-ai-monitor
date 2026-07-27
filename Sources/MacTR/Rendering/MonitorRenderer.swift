@@ -84,8 +84,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                    todayOutputTokens: u.todayOutputTokens,
                    secondsSinceActive: u.secondsSinceActive,
                    project: u.project, activity: u.activity,
-                   quotaUsedPercent: u.quotaUsedPercent,
-                   quotaResetsAt: u.quotaResetsAt,
+                   quotaWindows: u.quotaWindows,
                    needsAttention: true)
     }
 
@@ -293,6 +292,12 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                 secondsSinceActive: 180,
                 project: "example-project",
                 activity: claudeActivity,
+                quotaWindows: [
+                    QuotaWindow(label: "5h", usedPercent: 22,
+                                resetsAt: Date().addingTimeInterval(3 * 3600)),
+                    QuotaWindow(label: "7d", usedPercent: 9,
+                                resetsAt: Date().addingTimeInterval(4 * 86400)),
+                ],
                 needsAttention: false,
                 isWorking: false),
             codex: AgentUsage(
@@ -302,8 +307,10 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                 secondsSinceActive: 4,
                 project: "dashboard",
                 activity: codexActivity,
-                quotaUsedPercent: 34,
-                quotaResetsAt: Date().addingTimeInterval(6 * 86400),
+                quotaWindows: [
+                    QuotaWindow(label: "7d", usedPercent: 34,
+                                resetsAt: Date().addingTimeInterval(6 * 86400)),
+                ],
                 needsAttention: false,
                 isWorking: true,
                 stepCurrent: 4,
@@ -410,6 +417,14 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                                todayInputTokens: 48_300_000, todayOutputTokens: 512_000,
                                secondsSinceActive: 3, project: "MacTR",
                                activity: claudeActivity,
+                               quotaWindows: [
+                                   QuotaWindow(
+                                       label: "5h", usedPercent: 41,
+                                       resetsAt: Date().addingTimeInterval(2 * 3600)),
+                                   QuotaWindow(
+                                       label: "7d", usedPercent: 18,
+                                       resetsAt: Date().addingTimeInterval(5 * 86400)),
+                               ],
                                isWorking: true,
                                stepCurrent: 3, stepTotal: 4,
                                stepText: language == .simplifiedChinese
@@ -419,8 +434,11 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                               todayInputTokens: 60_100_000, todayOutputTokens: 375_000,
                               secondsSinceActive: 6, project: "web-service",
                               activity: codexActivity,
-                              quotaUsedPercent: 57,
-                              quotaResetsAt: Date().addingTimeInterval(3600 * 24 * 6),
+                              quotaWindows: [
+                                  QuotaWindow(
+                                      label: "7d", usedPercent: 57,
+                                      resetsAt: Date().addingTimeInterval(3600 * 24 * 6)),
+                              ],
                               isWorking: true,
                               stepCurrent: 4, stepTotal: 6,
                               stepText: language == .simplifiedChinese
@@ -1469,39 +1487,98 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                       font: ioFont, color: Color.textL)
         }
 
-        // Quota (Codex): remaining percentage + reset countdown + bar
-        if let used = usage.quotaUsedPercent {
-            let remaining = max(0, 100 - used)
-            let qColor: CGColor = remaining > 50 ? Color.green
-                : (remaining > 20 ? Color.orange : Color.red)
+        // Rate-limit windows. Codex reports one and it spans the column; Claude
+        // has both a 5-hour and a 7-day window, which split the width. Side by
+        // side rather than stacked because the bar already sits ~12 px above
+        // the bottom of the panel — there is no room for a second row.
+        let quotaWindows = usage.quotaWindows
+        if !quotaWindows.isEmpty {
             let qy = tokY + 78
-            Draw.text(
-                ctx,
-                AppLocalization.format(
-                    .quotaRemaining, language: language, remaining),
-                x: x, y: qy,
-                      font: Fonts.system(18, weight: .medium), color: qColor)
-            if let resets = usage.quotaResetsAt {
-                let secs = max(0, Int(resets.timeIntervalSinceNow))
-                let resetStr: String
-                if secs >= 86400 {
-                    resetStr = AppLocalization.format(
-                        .resetDays, language: language, secs / 86400)
-                } else if secs >= 3600 {
-                    resetStr = AppLocalization.format(
-                        .resetHours, language: language, secs / 3600)
-                } else {
-                    resetStr = AppLocalization.format(
-                        .resetMinutes, language: language, max(secs / 60, 1))
-                }
-                let rFont = Fonts.system(15)
-                let rW = (resetStr as NSString).size(withAttributes: [.font: rFont]).width
-                Draw.text(ctx, resetStr, x: Int(CGFloat(x + w) - rW), y: qy + 3,
-                          font: rFont, color: Color.textD)
+            let gap = 18
+            let slotW = quotaWindows.count > 1
+                ? (w - gap * (quotaWindows.count - 1)) / quotaWindows.count
+                : w
+            for (index, window) in quotaWindows.enumerated() {
+                drawQuotaWindow(
+                    ctx,
+                    x: x + index * (slotW + gap),
+                    y: qy,
+                    w: slotW,
+                    window: window,
+                    compact: quotaWindows.count > 1,
+                    language: language)
             }
-            Draw.bar(ctx, x: x, y: qy + 28, w: w, h: 8,
-                     percent: remaining, color: qColor)
         }
+    }
+
+    /// One rate-limit window: an optional window label, remaining percentage,
+    /// a right-aligned reset countdown, and a remaining-capacity bar.
+    ///
+    /// `compact` shortens both texts for the split layout — at half width the
+    /// full "剩余额度 78%" plus "3 小时后重置" needs 221 pt of a 236 pt slot.
+    private func drawQuotaWindow(
+        _ ctx: CGContext,
+        x: Int,
+        y: Int,
+        w: Int,
+        window: QuotaWindow,
+        compact: Bool,
+        language: AppLanguage
+    ) {
+        let remaining = max(0, 100 - window.usedPercent)
+        let color: CGColor = remaining > 50 ? Color.green
+            : (remaining > 20 ? Color.orange : Color.red)
+
+        var textX = x
+        if !window.label.isEmpty {
+            let labelFont = Fonts.system(15, weight: .semibold)
+            Draw.text(ctx, window.label, x: textX, y: y + 3,
+                      font: labelFont, color: Color.textD)
+            textX += Int((window.label as NSString)
+                .size(withAttributes: [.font: labelFont]).width) + 8
+        }
+
+        Draw.text(
+            ctx,
+            AppLocalization.format(
+                compact ? .quotaRemainingCompact : .quotaRemaining,
+                language: language,
+                remaining),
+            x: textX, y: y,
+            font: Fonts.system(18, weight: .medium), color: color)
+
+        if let resets = window.resetsAt {
+            let secs = max(0, Int(resets.timeIntervalSinceNow))
+            let resetStr: String
+            if compact {
+                // The label already says which window this is, so the bare
+                // duration reads unambiguously and costs a third of the width.
+                if secs >= 86400 {
+                    resetStr = "\(secs / 86400)d"
+                } else if secs >= 3600 {
+                    resetStr = "\(secs / 3600)h"
+                } else {
+                    resetStr = "\(max(secs / 60, 1))m"
+                }
+            } else if secs >= 86400 {
+                resetStr = AppLocalization.format(
+                    .resetDays, language: language, secs / 86400)
+            } else if secs >= 3600 {
+                resetStr = AppLocalization.format(
+                    .resetHours, language: language, secs / 3600)
+            } else {
+                resetStr = AppLocalization.format(
+                    .resetMinutes, language: language, max(secs / 60, 1))
+            }
+            let resetFont = Fonts.system(15)
+            let resetW = (resetStr as NSString)
+                .size(withAttributes: [.font: resetFont]).width
+            Draw.text(ctx, resetStr, x: Int(CGFloat(x + w) - resetW), y: y + 3,
+                      font: resetFont, color: Color.textD)
+        }
+
+        Draw.bar(ctx, x: x, y: y + 28, w: w, h: 8,
+                 percent: remaining, color: color)
     }
 
     /// Segmented plan-progress bar: completed steps solid, current bright, pending dim.

@@ -27,7 +27,7 @@
 - **当前项目**和**它最后说的话** —— 消息里的 Markdown 表格会被渲染成对齐的表格,而不是原始的 `| … |` 文本。
 - **计划 / 步骤进度** —— `步骤 4/6` 徽章 + 分段进度条,从 Codex 的 `update_plan` 和 Claude 的 `TodoWrite` 解析而来。上一轮已完成的旧计划会自动消失。
 - **今日 Token 用量** —— 总量 + In/Out,用简洁的 `万 / 亿` 格式。
-- **Codex 剩余额度** —— 剩余百分比 + 重置倒计时,跨所有近期会话取最新读数。
+- **剩余额度** —— 剩余百分比 + 重置倒计时。Codex 直接从会话日志里的 `rate_limits` 读取;Claude 需要额外配置一个缓存文件(见下),配好后会并排显示 5 小时与 7 天两个窗口。
 - **实时状态** —— agent 工作时该栏**缓慢呼吸**,完成一轮或需要你输入时**闪烁**约 10 秒提醒。
 
 ### 🖥️ 系统面板
@@ -250,6 +250,41 @@ MacTR 从不访问任何网络或 API,只读取这些 CLI 本来就写到本地�
 | Codex | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` | agent 消息、`token_count`、`rate_limits`、`update_plan` |
 
 Token 总量按本地自然日统计;某个 agent 今天还没跑过时,面板会优雅地显示它上一次会话的上下文。
+
+### 为什么 Claude 的剩余额度要额外配置
+
+Codex 把 `rate_limits.primary`(已用百分比 + 重置时间)写进**每一条** rollout 日志,
+所以 MacTR 顺手就能读到。Claude Code 不把限额信息写到磁盘任何地方 ——
+`~/.claude/projects`、`stats-cache.json`、`sessions/` 里都没有。唯一的来源是带
+OAuth token 请求 Anthropic 的用量接口。
+
+MacTR 不做这件事,原因有两个:一是它会打破“完全不联网”这个定位;二是那个 token
+存在 `Claude Code-credentials` 这个 Keychain 项里,**刷新它会轮换共享的 refresh
+token,把 Claude Code 本身登出**。
+
+所以 MacTR 改为读取一个由你自己的工具写好的缓存文件:
+
+```bash
+# 默认位置
+~/.cache/mactr/claude-usage.json
+
+# 或指向已有的缓存
+defaults write com.beret21.MacTR claudeUsageCachePath /path/to/usage_cache.json
+```
+
+支持两种结构 —— 顶层直接放窗口,或嵌套在 `providers.claude.data` 下
+(与 `token-usage-dash` 的 `usage_cache.json` 兼容,可直接软链过去):
+
+```json
+{
+  "fetched_at": "2026-07-28T04:00:00Z",
+  "five_hour": { "utilization": 22.0, "resets_at": "2026-07-28T08:20:00Z" },
+  "seven_day": { "utilization":  9.0, "resets_at": "2026-08-01T20:00:00Z" }
+}
+```
+
+`utilization` 是已用百分比。某个窗口的 `resets_at` 一旦过期就不再显示 ——
+绝对时间戳过期就说明旁边那个百分比早已归零;整份缓存超过 12 小时也会整体忽略。
 
 ## 隐私
 

@@ -13,6 +13,30 @@ import Foundation
 
 // MARK: - Data Structures
 
+/// One rate-limit window: how much of it is spent and when it rolls over.
+/// Codex reports a single window; Claude has both a 5-hour and a 7-day one.
+struct QuotaWindow: Sendable, Equatable {
+    /// Short, language-neutral name rendered beside the percentage ("5h", "7d").
+    let label: String
+    let usedPercent: Double
+    let resetsAt: Date?
+
+    /// A window whose reset time has already passed is provably stale — the
+    /// real utilisation rolled over to near zero — so it is dropped rather
+    /// than shown as a confident number.
+    var isExpired: Bool {
+        guard let resetsAt else { return false }
+        return resetsAt < Date()
+    }
+
+    /// "5h" / "7d" from a window length in minutes.
+    static func label(minutes: Int) -> String {
+        if minutes >= 1440, minutes % 1440 == 0 { return "\(minutes / 1440)d" }
+        if minutes >= 60, minutes % 60 == 0 { return "\(minutes / 60)h" }
+        return "\(minutes)m"
+    }
+}
+
 struct AgentUsage: Sendable {
     let available: Bool             // data directory exists at all
     let todayInputTokens: UInt64    // includes cache read/write tokens
@@ -20,8 +44,8 @@ struct AgentUsage: Sendable {
     let secondsSinceActive: Int?    // nil = no session today
     let project: String?            // cwd basename of most recent session
     let activity: String?           // latest tool call / message summary
-    let quotaUsedPercent: Double?   // rate-limit window usage (Codex only for now)
-    let quotaResetsAt: Date?
+    /// Rate-limit windows, newest reading first. Empty when unavailable.
+    let quotaWindows: [QuotaWindow]
     let needsAttention: Bool        // turn finished / waiting for user — flash the column
     let isWorking: Bool             // actively running a turn — slow breathing background
     let stepCurrent: Int?           // active plan step (1-based); nil = no plan
@@ -31,7 +55,7 @@ struct AgentUsage: Sendable {
 
     init(available: Bool, todayInputTokens: UInt64, todayOutputTokens: UInt64,
          secondsSinceActive: Int?, project: String?, activity: String?,
-         quotaUsedPercent: Double? = nil, quotaResetsAt: Date? = nil,
+         quotaWindows: [QuotaWindow] = [],
          needsAttention: Bool = false, isWorking: Bool = false,
          stepCurrent: Int? = nil, stepTotal: Int? = nil, stepText: String? = nil) {
         self.available = available
@@ -40,8 +64,7 @@ struct AgentUsage: Sendable {
         self.secondsSinceActive = secondsSinceActive
         self.project = project
         self.activity = activity
-        self.quotaUsedPercent = quotaUsedPercent
-        self.quotaResetsAt = quotaResetsAt
+        self.quotaWindows = quotaWindows.filter { !$0.isExpired }
         self.needsAttention = needsAttention
         self.isWorking = isWorking
         self.stepCurrent = stepCurrent
@@ -61,6 +84,7 @@ final class AgentUsageCollector: @unchecked Sendable {
 
     private let fm = FileManager.default
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
+    private let claudeQuota = ClaudeQuotaReader()
 
     // Incremental state, reset on day rollover
     private var dayKey = ""
@@ -89,7 +113,7 @@ final class AgentUsageCollector: @unchecked Sendable {
     // Last-known Codex quota (account-global). The full rate-limit block appears only
     // occasionally and the newest reading may be in a different file than the active
     // one, so we track the newest-by-timestamp across recent files and cache it.
-    private var codexQuotaCache: (used: Double, resets: Date?)?
+    private var codexQuotaCache: QuotaWindow?
     private var codexQuotaTS = ""            // newest reading's timestamp seen so far
     private var codexQuotaLastScan: Date?
 
@@ -181,6 +205,7 @@ final class AgentUsageCollector: @unchecked Sendable {
                           todayOutputTokens: claudeOutput,
                           secondsSinceActive: secondsAgo,
                           project: project, activity: activity,
+                          quotaWindows: claudeQuota.windows(),
                           needsAttention: attention, isWorking: working,
                           stepCurrent: step?.current, stepTotal: step?.total,
                           stepText: step?.text)
@@ -369,8 +394,7 @@ final class AgentUsageCollector: @unchecked Sendable {
         var project: String?
         var activity: String?
         var secondsAgo: Int?
-        let quotaUsed = codexQuotaCache?.used
-        let quotaResets = codexQuotaCache?.resets
+        let quotaWindows = codexQuotaCache.map { [$0] } ?? []
         var attention = false
         var working = false
         var step: (current: Int, total: Int, text: String)?
@@ -394,7 +418,7 @@ final class AgentUsageCollector: @unchecked Sendable {
                           todayOutputTokens: codexOutput,
                           secondsSinceActive: secondsAgo,
                           project: project, activity: activity,
-                          quotaUsedPercent: quotaUsed, quotaResetsAt: quotaResets,
+                          quotaWindows: quotaWindows,
                           needsAttention: attention, isWorking: working,
                           stepCurrent: step?.current, stepTotal: step?.total,
                           stepText: step?.text)
@@ -507,7 +531,11 @@ final class AgentUsageCollector: @unchecked Sendable {
                     if let r = (primary["resets_at"] as? NSNumber)?.doubleValue {
                         resets = Date(timeIntervalSince1970: r)
                     }
-                    codexQuotaCache = (used, resets)
+                    let minutes = (primary["window_minutes"] as? NSNumber)?.intValue
+                    codexQuotaCache = QuotaWindow(
+                        label: minutes.map(QuotaWindow.label(minutes:)) ?? "",
+                        usedPercent: used,
+                        resetsAt: resets)
                 }
             }
         }

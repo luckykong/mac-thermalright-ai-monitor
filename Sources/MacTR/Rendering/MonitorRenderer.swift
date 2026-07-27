@@ -634,8 +634,11 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
         if let pika = PikachuAsset.image {
             let t = Date().timeIntervalSince1970
-            let size: CGFloat = 49
-            var rect = CGRect(x: CGFloat(x + w - 65), y: CGFloat(y + 48),
+            // Was 49 pt. The sprite is 170 px, so that much downscaling averaged
+            // away the red cheeks and black outlines and left a pale yellow
+            // blob — the artwork is full colour, it just had no room to show it.
+            let size: CGFloat = 66
+            var rect = CGRect(x: CGFloat(x + w - 82), y: CGFloat(y + 40),
                               width: size, height: size)
             if agentsBusy {
                 rect.origin.y -= CGFloat(abs(sin(t * .pi * 2)) * 3)
@@ -1079,7 +1082,9 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                 font: fanFont, color: fanColor)
         }
 
-        let catScale: CGFloat = 0.54
+        // Was 0.54. The card has ~112 pt of clear space above the desk line and
+        // is 190 pt wide, so the cat was using well under half of what it had.
+        let catScale: CGFloat = 0.78
         drawBongoCat(
             ctx, cx: x + w / 2, baseY: y + h - 12,
             tapping: agentsBusy, phase: Int(t * 5) % 2 == 0, scale: catScale)
@@ -1308,6 +1313,9 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
     private func drawImageUpright(_ ctx: CGContext, _ image: CGImage, in rect: CGRect,
                                  flipX: Bool = false) {
         ctx.saveGState()
+        // These sprites are drawn well below their native size; the default
+        // filter loses the small high-contrast details (cheeks, outlines).
+        ctx.interpolationQuality = .high
         if flipX {
             ctx.translateBy(x: rect.maxX, y: rect.minY + rect.height)
             ctx.scaleBy(x: -1, y: -1)
@@ -1548,19 +1556,12 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             font: Fonts.system(18, weight: .medium), color: color)
 
         if let resets = window.resetsAt {
+            // One wording everywhere. The split layout used to fall back to a
+            // bare "3h"/"4d", which read as Latin shorthand next to Codex's
+            // Chinese countdown in the very same panel.
             let secs = max(0, Int(resets.timeIntervalSinceNow))
             let resetStr: String
-            if compact {
-                // The label already says which window this is, so the bare
-                // duration reads unambiguously and costs a third of the width.
-                if secs >= 86400 {
-                    resetStr = "\(secs / 86400)d"
-                } else if secs >= 3600 {
-                    resetStr = "\(secs / 3600)h"
-                } else {
-                    resetStr = "\(max(secs / 60, 1))m"
-                }
-            } else if secs >= 86400 {
+            if secs >= 86400 {
                 resetStr = AppLocalization.format(
                     .resetDays, language: language, secs / 86400)
             } else if secs >= 3600 {

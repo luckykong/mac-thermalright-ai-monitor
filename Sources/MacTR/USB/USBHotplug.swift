@@ -65,7 +65,7 @@ final class USBHotplug: @unchecked Sendable {
             }
         }
 
-        print("[Hotplug] Watching for device connect/disconnect")
+        log("[Hotplug] Watching for device connect/disconnect")
     }
 
     func stop() {
@@ -130,7 +130,7 @@ private func deviceAdded(refcon: UnsafeMutableRawPointer?, iterator: io_iterator
     while case let service = IOIteratorNext(iterator), service != 0 {
         IOObjectRelease(service)
     }
-    print("[Hotplug] Device connected")
+    log("[Hotplug] Device connected")
     hotplug.onConnect?()
 }
 
@@ -139,6 +139,6 @@ private func deviceRemoved(refcon: UnsafeMutableRawPointer?, iterator: io_iterat
     while case let service = IOIteratorNext(iterator), service != 0 {
         IOObjectRelease(service)
     }
-    print("[Hotplug] Device disconnected")
+    log("[Hotplug] Device disconnected")
     hotplug.onDisconnect?()
 }

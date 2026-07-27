@@ -105,7 +105,7 @@ final class USBDevice: @unchecked Sendable {
             if active == 1 {
                 let detachResult = libusb_detach_kernel_driver(handle, i)
                 if detachResult == LIBUSB_SUCCESS.rawValue {
-                    print("[USB] Detached kernel driver from interface \(i)")
+                    log("[USB] Detached kernel driver from interface \(i)")
                 }
                 // NOT_SUPPORTED (-12) is expected on macOS — ignore
             }
@@ -156,9 +156,9 @@ final class USBDevice: @unchecked Sendable {
             throw USBError.claimFailed(claimResult)
         }
 
-        print("[USB] Opened \(String(format: "%04x:%04x", USBDeviceIdentity.vendorID, pid))"
-              + "  EP_OUT=0x\(String(format: "%02x", epOut))"
-              + "  EP_IN=0x\(String(format: "%02x", epIn))")
+        log("[USB] Opened \(String(format: "%04x:%04x", USBDeviceIdentity.vendorID, pid))"
+            + "  EP_OUT=0x\(String(format: "%02x", epOut))"
+            + "  EP_IN=0x\(String(format: "%02x", epIn))")
     }
 
     func close() {

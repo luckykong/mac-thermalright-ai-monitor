@@ -113,7 +113,7 @@ final class AppState {
                 self.frameCount = status.frameCount
                 self.lastFrameSize = status.lastFrameSize
                 self.customScriptSnapshot = status.customScriptSnapshot
-                self.runtimeState = Self.runtimeState(for: status)
+                self.runtimeState = status.state
 
                 // Log state changes + post notification for UI refresh
                 if status.connected != prev {
@@ -235,26 +235,23 @@ final class AppState {
         NotificationCenter.default.post(name: .deviceStateChanged, object: self)
     }
 
-    private static func runtimeState(for status: EngineStatus) -> AppRuntimeState {
-        if status.connected { return .running }
-        let lowercased = status.message.lowercased()
-        if lowercased.contains("connecting") { return .connecting }
-        if lowercased.contains("error") || lowercased.contains("failed") {
-            return .error(status.message)
-        }
-        return .disconnected
-    }
 }
 
 // MARK: - Engine Status
 
 struct EngineStatus: Sendable {
-    let connected: Bool
+    /// The engine's own view of what it is doing. Carried explicitly because
+    /// AppState used to recover it by substring-matching `message` for
+    /// "connecting"/"error"/"failed" — which silently coupled the state machine
+    /// to user-visible English wording.
+    let state: AppRuntimeState
     let deviceInfo: DeviceInfo?
     let message: String
     let frameCount: Int
     let lastFrameSize: Int
     let customScriptSnapshot: CustomScriptSnapshot
+
+    var connected: Bool { state == .running }
 }
 
 // MARK: - Display Engine (runs entirely off main thread)
@@ -464,18 +461,28 @@ final class DisplayEngine: @unchecked Sendable {
         device = nil
         frameCount = 0
 
-        postStatus(connected: false, message: "Connecting...")
+        postStatus(.connecting, message: "Connecting...")
 
         let dev = USBDevice()
         do {
             try dev.open()
         } catch {
-            let message = switch error {
-            case USBError.deviceNotFound: "Device not found"
-            case USBError.deviceBusy: "Device busy (another app?)"
-            default: "Error: \(error)"
+            // Mapping preserved from the old substring matching: a missing or
+            // busy device is not an error state, an unexpected failure is.
+            let message: String
+            let state: AppRuntimeState
+            switch error {
+            case USBError.deviceNotFound:
+                message = "Device not found"
+                state = .disconnected
+            case USBError.deviceBusy:
+                message = "Device busy (another app?)"
+                state = .disconnected
+            default:
+                message = "Error: \(error)"
+                state = .error(message)
             }
-            postStatus(connected: false, message: message)
+            postStatus(state, message: message)
             if !previewActive { monitorRenderer.stopMetrics() }
             return nil
         }
@@ -483,12 +490,16 @@ final class DisplayEngine: @unchecked Sendable {
         do {
             let info = try LYProtocol.handshake(device: dev)
             device = dev
-            postStatus(connected: true, deviceInfo: info,
+            postStatus(.running, deviceInfo: info,
                        message: "Connected (\(info.width)x\(info.height))")
+            if !info.usesJPEG {
+                log("[Engine] Device reports a non-JPEG frame format;"
+                    + " MacTR only implements JPEG and will send it anyway.")
+            }
             return (dev, info)
         } catch {
             dev.close()
-            postStatus(connected: false, message: "Handshake failed")
+            postStatus(.error("Handshake failed"), message: "Handshake failed")
             return nil
         }
     }
@@ -517,7 +528,11 @@ final class DisplayEngine: @unchecked Sendable {
             autoreleasepool {
                 let set = currentSet
                 let bright = brightness
-                let rotate = rotateDisplay
+                // The handshake reports how this panel is mounted, and the
+                // "Rotate 180°" switch is for panels mounted the other way up,
+                // so the two XOR together. Until now needsRotation was parsed
+                // and then never read.
+                let rotate180 = info.needsRotation != rotateDisplay
 
                 let jpeg: Data?
 
@@ -527,7 +542,8 @@ final class DisplayEngine: @unchecked Sendable {
                         frameLock.lock()
                         latestFrame = image
                         frameLock.unlock()
-                        jpeg = JPEGEncoder.encode(image, brightness: bright, rotate: rotate)
+                        jpeg = JPEGEncoder.encode(
+                            image, brightness: bright, rotate180: rotate180)
                     } else {
                         jpeg = nil
                     }
@@ -541,13 +557,14 @@ final class DisplayEngine: @unchecked Sendable {
                         if frameCount == 1 {
                             log("[OK] Active! ~\(jpeg.count / 1024)KB/frame")
                         }
-                        postStatus(connected: true, deviceInfo: nil,
-                                   message: "Active")
+                        postStatus(.running, message: "Active")
                     } catch {
                         log("[ERROR] Frame send failed: \(error)")
                         self.device?.close()
                         self.device = nil
-                        postStatus(connected: false, message: "Disconnected (send error)")
+                        postStatus(
+                            .error("Disconnected (send error)"),
+                            message: "Disconnected (send error)")
                         // Drop out of the frame loop and let connectAndRun()
                         // own the backoff and reconnect. (`return` here only
                         // leaves the autoreleasepool closure, so clearing
@@ -599,7 +616,7 @@ final class DisplayEngine: @unchecked Sendable {
                 if !self.previewActive {
                     self.monitorRenderer.stopMetrics()
                 }
-                self.postStatus(connected: false, message: "Disconnected (unplugged)")
+                self.postStatus(.disconnected, message: "Disconnected (unplugged)")
             }
         }
 
@@ -657,16 +674,18 @@ final class DisplayEngine: @unchecked Sendable {
     }
 
     private func postStatus(
-        connected: Bool, deviceInfo: DeviceInfo? = nil, message: String
+        _ state: AppRuntimeState,
+        deviceInfo: DeviceInfo? = nil,
+        message: String
     ) {
         let status = EngineStatus(
-            connected: connected,
+            state: state,
             deviceInfo: deviceInfo,
             message: message,
             frameCount: frameCount,
             lastFrameSize: lastFrameSize,
             customScriptSnapshot: monitorRenderer.customScriptSnapshot())
-        if connected, message == "Active" {
+        if status.connected, message == "Active" {
             let now = Date()
             guard now.timeIntervalSince(lastProgressStatusAt) >= 1 else { return }
             lastProgressStatusAt = now

@@ -69,12 +69,12 @@ enum LYProtocol {
 
         // Send handshake
         _ = try device.bulkWrite(payload, timeout: 1000)
-        print("[LY] Handshake sent (2048 bytes)")
+        logVerbose("[LY] Handshake sent (2048 bytes)")
 
         // Read response
         let resp = try device.bulkRead(size: 512, timeout: 1000)
-        print("[LY] Response: \(resp.count) bytes")
-        print("[LY] Hex (first 48): \(resp.prefix(48).map { String(format: "%02x", $0) }.joined(separator: " "))")
+        logVerbose("[LY] Response: \(resp.count) bytes")
+        logVerbose("[LY] Hex (first 48): \(resp.prefix(48).map { String(format: "%02x", $0) }.joined(separator: " "))")
 
         // Validate
         guard resp.count >= 37,
@@ -85,7 +85,7 @@ enum LYProtocol {
             let b0 = resp.count > 0 ? String(format: "%02x", resp[0]) : "??"
             let b1 = resp.count > 1 ? String(format: "%02x", resp[1]) : "??"
             let b8 = resp.count > 8 ? String(format: "%02x", resp[8]) : "??"
-            print("[ERROR] Handshake validation failed: [0]=\(b0) [1]=\(b1) [8]=\(b8)")
+            log("[ERROR] Handshake validation failed: [0]=\(b0) [1]=\(b1) [8]=\(b8)")
             throw LYError.handshakeFailed
         }
 
@@ -136,10 +136,8 @@ enum LYProtocol {
             usesJPEG: usesJPEG, needsRotation: needsRotation,
             pid: pid)
 
-        print("[OK] Handshake successful!")
-        print("     PM=\(pm), SUB=\(sub), FBL=\(fbl)")
-        print("     Resolution: \(width)x\(height)")
-        print("     JPEG mode: \(usesJPEG), Rotate: \(needsRotation)")
+        log("[OK] Handshake successful — PM=\(pm) SUB=\(sub) FBL=\(fbl)"
+            + " \(width)x\(height) JPEG=\(usesJPEG) rotate=\(needsRotation)")
 
         return info
     }

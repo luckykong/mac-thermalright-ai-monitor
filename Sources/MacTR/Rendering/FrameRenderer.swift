@@ -24,10 +24,20 @@ enum JPEGEncoder {
     nonisolated(unsafe) private static var processingCtx: CGContext?
     private static let encodeLock = NSLock()
 
-    /// Encode CGImage to JPEG Data with 180° rotation and brightness adjustment.
-    /// Reduces quality if over 650KB (matches Python behavior).
+    /// Encode a CGImage to JPEG for the LCD, optionally rotating 180° and
+    /// brightening. Reduces quality if over 650KB (matches Python behavior).
+    ///
+    /// `rotate180` says plainly what it does. It used to be called `rotate`
+    /// with the inverted meaning — `if !rotate { …rotate… }`, defaulting to
+    /// `true` — so the parameter name, its default and the doc comment all
+    /// contradicted each other. The panel is normally mounted upside down
+    /// relative to the rendered frame, and the user-facing "Rotate 180°"
+    /// switch is for panels mounted the other way up, so it *disables* this.
     static func encode(
-        _ image: CGImage, brightness: Int = 1, rotate: Bool = true, maxBytes: Int = 650_000
+        _ image: CGImage,
+        brightness: Int = 1,
+        rotate180: Bool = true,
+        maxBytes: Int = 650_000
     ) -> Data? {
         encodeLock.lock()
         defer { encodeLock.unlock() }
@@ -36,7 +46,7 @@ enum JPEGEncoder {
             let h = image.height
             var finalImage = image
 
-            if !rotate || brightness > 1 {
+            if rotate180 || brightness > 1 {
                 if processingCtx == nil
                     || processingCtx!.width != w
                     || processingCtx!.height != h
@@ -56,7 +66,7 @@ enum JPEGEncoder {
                 ctx.saveGState()
                 ctx.setBlendMode(.copy)
                 ctx.clear(CGRect(x: 0, y: 0, width: w, height: h))
-                if !rotate {
+                if rotate180 {
                     ctx.translateBy(x: CGFloat(w), y: CGFloat(h))
                     ctx.scaleBy(x: -1, y: -1)
                 }

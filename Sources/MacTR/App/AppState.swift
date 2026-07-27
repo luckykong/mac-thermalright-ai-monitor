@@ -20,81 +20,185 @@ enum DisplaySet: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
 }
 
+enum DisplayPauseReason: String, Equatable, Sendable {
+    case manual
+    case schedule
+
+    var statusMessage: String {
+        switch self {
+        case .manual: "Paused"
+        case .schedule: "Paused by daily schedule"
+        }
+    }
+}
+
+enum AppRuntimeState: Equatable, Sendable {
+    case stopped
+    case connecting
+    case running
+    case paused(DisplayPauseReason)
+    case disconnected
+    case error(String)
+}
+
 // MARK: - AppState
 
 @Observable
 @MainActor
 final class AppState {
 
-    // Connection (UI-facing)
-    var isConnected = false
-    var deviceInfo: DeviceInfo?
-    var statusMessage = "Disconnected"
+    let preferences: AppPreferences
 
-    // Display
-    var currentSet: DisplaySet = .systemMonitor
-    var brightness: Int = 5
-    var refreshInterval: Double = 0.5
-    var rotateDisplay: Bool = false
+    // Connection (UI-facing)
+    private(set) var isConnected = false
+    private(set) var deviceInfo: DeviceInfo?
+    private(set) var statusMessage = "Stopped"
+    private(set) var runtimeState: AppRuntimeState = .stopped
+    private(set) var pauseReason: DisplayPauseReason?
 
     // Metrics (for menu bar display)
-    var frameCount = 0
-    var lastFrameSize = 0
+    private(set) var frameCount = 0
+    private(set) var lastFrameSize = 0
 
     // MARK: - Internal
 
     private var engine: DisplayEngine?
+    private var engineGeneration: UUID?
+
+    init(preferences: AppPreferences = AppPreferences()) {
+        self.preferences = preferences
+    }
+
+    var isPaused: Bool { pauseReason != nil }
 
     // MARK: - Lifecycle
 
     func start() {
+        guard engine == nil, pauseReason == nil else { return }
+        let generation = UUID()
+        engineGeneration = generation
+        runtimeState = .connecting
+        statusMessage = "Connecting..."
+        postStateChanged()
+
         let eng = DisplayEngine { [weak self] status in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.engineGeneration == generation,
+                      self.pauseReason == nil
+                else { return }
                 let prev = self.isConnected
+                let previousMessage = self.statusMessage
                 self.isConnected = status.connected
                 self.deviceInfo = status.deviceInfo ?? self.deviceInfo
                 self.statusMessage = status.message
                 self.frameCount = status.frameCount
                 self.lastFrameSize = status.lastFrameSize
+                self.runtimeState = Self.runtimeState(for: status)
 
                 // Log state changes + post notification for UI refresh
                 if status.connected != prev {
                     log("[*] LCD \(status.connected ? "connected" : "disconnected")")
-                    NotificationCenter.default.post(name: .deviceStateChanged, object: nil)
+                }
+                if status.connected != prev || status.message != previousMessage {
+                    self.postStateChanged()
                 }
             }
         }
         engine = eng
-        eng.start(set: currentSet, brightness: brightness, interval: refreshInterval, rotate: rotateDisplay)
+        eng.start(
+            set: preferences.currentSet,
+            brightness: preferences.brightness,
+            interval: preferences.refreshInterval,
+            rotate: preferences.rotateDisplay)
     }
 
     func stop() {
+        engineGeneration = nil
         engine?.stop()
         engine = nil
         isConnected = false
         statusMessage = "Stopped"
+        runtimeState = .stopped
+        pauseReason = nil
+        frameCount = 0
+        lastFrameSize = 0
+        postStateChanged()
+    }
+
+    func pauseDisplay(reason: DisplayPauseReason) {
+        guard pauseReason != .manual || reason == .manual else { return }
+        engineGeneration = nil
+        engine?.stop()
+        engine = nil
+        isConnected = false
+        pauseReason = reason
+        runtimeState = .paused(reason)
+        statusMessage = reason.statusMessage
+        frameCount = 0
+        lastFrameSize = 0
+        log("[App] Display output paused (\(reason.rawValue))")
+        postStateChanged()
+    }
+
+    func resumeDisplay() {
+        guard pauseReason != nil else {
+            if engine == nil { start() }
+            return
+        }
+        pauseReason = nil
+        runtimeState = .connecting
+        statusMessage = "Resuming..."
+        log("[App] Resuming display output")
+        postStateChanged()
+        start()
     }
 
     func connect() {
+        guard !isPaused else { return }
+        if engine == nil {
+            start()
+            return
+        }
         engine?.reconnect()
     }
 
     func disconnect() {
+        engineGeneration = nil
         engine?.stop()
+        engine = nil
         isConnected = false
         statusMessage = "Disconnected"
+        runtimeState = .disconnected
         frameCount = 0
+        postStateChanged()
     }
 
     /// Called when user changes display set, brightness, or interval
     func applySettings() {
-        engine?.updateSettings(set: currentSet, brightness: brightness, interval: refreshInterval, rotate: rotateDisplay)
+        engine?.updateSettings(
+            set: preferences.currentSet,
+            brightness: preferences.brightness,
+            interval: preferences.refreshInterval,
+            rotate: preferences.rotateDisplay)
     }
 
     /// Latest rendered frame for the on-Mac preview window
     func currentFrame() -> CGImage? {
         engine?.currentFrame()
+    }
+
+    private func postStateChanged() {
+        NotificationCenter.default.post(name: .deviceStateChanged, object: self)
+    }
+
+    private static func runtimeState(for status: EngineStatus) -> AppRuntimeState {
+        if status.connected { return .running }
+        let lowercased = status.message.lowercased()
+        if lowercased.contains("connecting") { return .connecting }
+        if lowercased.contains("error") || lowercased.contains("failed") {
+            return .error(status.message)
+        }
+        return .disconnected
     }
 }
 
@@ -116,9 +220,12 @@ final class DisplayEngine: @unchecked Sendable {
     private let usbQueue = DispatchQueue(label: "com.thermalvision.usb")
     private var device: USBDevice?
     private var hotplug: USBHotplug?
+    private var enabled = false
     private var running = false
     private var frameCount = 0
     private var lastFrameSize = 0
+    private let observerLock = NSLock()
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     // Settings (atomically accessed)
     private var currentSet: DisplaySet = .systemMonitor
@@ -134,6 +241,7 @@ final class DisplayEngine: @unchecked Sendable {
     }
 
     func start(set: DisplaySet, brightness: Int, interval: Double, rotate: Bool) {
+        enabled = true
         self.currentSet = set
         self.brightness = brightness
         self.interval = interval
@@ -149,8 +257,10 @@ final class DisplayEngine: @unchecked Sendable {
     }
 
     func stop() {
+        enabled = false
         running = false
         monitorRenderer.stopMetrics()
+        removeWorkspaceObservers()
         usbQueue.async { [weak self] in
             self?.hotplug?.stop()
             self?.hotplug = nil
@@ -161,7 +271,8 @@ final class DisplayEngine: @unchecked Sendable {
 
     func reconnect() {
         usbQueue.async { [weak self] in
-            self?.connectAndRun()
+            guard let self, self.enabled else { return }
+            self.connectAndRun()
         }
     }
 
@@ -182,7 +293,7 @@ final class DisplayEngine: @unchecked Sendable {
     // MARK: - Private (all on usbQueue)
 
     private func connectAndRun() {
-        guard !running else { return }
+        guard enabled, !running else { return }
 
         // Ensure metrics collection is running (may have been stopped on disconnect/sleep)
         monitorRenderer.startMetrics()
@@ -226,7 +337,7 @@ final class DisplayEngine: @unchecked Sendable {
 
         var nextDeadline = DispatchTime.now()
 
-        while running {
+        while running && enabled {
             // Adaptive frame rate: the device sustains ~19fps, but the dashboard's
             // data only changes every ~2s. Run fast (15fps) ONLY while a column is
             // animating (agent working → breathing, or done → blinking); otherwise
@@ -270,8 +381,10 @@ final class DisplayEngine: @unchecked Sendable {
                         self.device = nil
                         postStatus(connected: false, message: "Disconnected (send error)")
 
+                        guard self.enabled else { return }
                         log("[Engine] Will retry connection in 5s...")
                         Thread.sleep(forTimeInterval: 5)
+                        guard self.enabled else { return }
                         connectAndRun()
                         return
                     }
@@ -296,7 +409,7 @@ final class DisplayEngine: @unchecked Sendable {
         hp.onConnect = { [weak self] in
             guard let self else { return }
             self.usbQueue.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                guard let self, !self.running else { return }
+                guard let self, self.enabled, !self.running else { return }
                 log("[Hotplug] Attempting reconnect...")
                 self.monitorRenderer.startMetrics()
                 self.connectAndRun()
@@ -304,7 +417,7 @@ final class DisplayEngine: @unchecked Sendable {
         }
 
         hp.onDisconnect = { [weak self] in
-            guard let self else { return }
+            guard let self, self.enabled else { return }
             log("[Hotplug] Device removed")
             self.running = false
             // Metrics keep collecting — the on-Mac preview window takes over
@@ -322,14 +435,16 @@ final class DisplayEngine: @unchecked Sendable {
         // Watch for macOS wake from sleep — USB needs reconnect after sleep
         // MUST register on main thread for NSWorkspace notifications to fire
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.enabled else { return }
             let center = NSWorkspace.shared.notificationCenter
 
-            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-                guard let self else { return }
+            let wakeObserver = center.addObserver(
+                forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                guard let self, self.enabled else { return }
                 log("[Wake] macOS woke from sleep — reconnecting in 3s...")
                 self.usbQueue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-                    guard let self else { return }
+                    guard let self, self.enabled else { return }
                     self.running = false
                     self.device?.close()
                     self.device = nil
@@ -338,17 +453,33 @@ final class DisplayEngine: @unchecked Sendable {
                 }
             }
 
-            center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
-                guard let self else { return }
+            let screenObserver = center.addObserver(
+                forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                guard let self, self.enabled else { return }
                 if !self.running {
                     log("[Wake] Screens woke — reconnecting in 2s...")
                     self.usbQueue.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                        guard let self, !self.running else { return }
+                        guard let self, self.enabled, !self.running else { return }
                         self.connectAndRun()
                     }
                 }
             }
+
+            self.observerLock.lock()
+            self.workspaceObservers.append(contentsOf: [wakeObserver, screenObserver])
+            self.observerLock.unlock()
         }
+    }
+
+    private func removeWorkspaceObservers() {
+        observerLock.lock()
+        let observers = workspaceObservers
+        workspaceObservers.removeAll()
+        observerLock.unlock()
+
+        let center = NSWorkspace.shared.notificationCenter
+        observers.forEach(center.removeObserver)
     }
 
     private func postStatus(

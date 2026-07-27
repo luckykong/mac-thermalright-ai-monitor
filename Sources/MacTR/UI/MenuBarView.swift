@@ -40,12 +40,12 @@ struct MenuBarView: View {
 
             ForEach(DisplaySet.allCases) { set in
                 Button {
-                    state.currentSet = set
+                    state.preferences.currentSet = set
                     state.applySettings()
                 } label: {
                     HStack {
-                        Image(systemName: state.currentSet == set ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(state.currentSet == set ? .blue : .secondary)
+                        Image(systemName: state.preferences.currentSet == set ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(state.preferences.currentSet == set ? .blue : .secondary)
                         Text(set.rawValue)
                     }
                 }
@@ -58,7 +58,7 @@ struct MenuBarView: View {
                 Text("Brightness")
                     .font(.caption)
                 Spacer()
-                Text("\(state.brightness)")
+                Text("\(state.preferences.brightness)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -66,21 +66,21 @@ struct MenuBarView: View {
 
             HStack(spacing: 4) {
                 Button("−") {
-                    if state.brightness > 1 {
-                        state.brightness -= 1
+                    if state.preferences.brightness > 1 {
+                        state.preferences.brightness -= 1
                         state.applySettings()
                     }
                 }
                 .buttonStyle(.bordered)
 
                 Slider(value: brightnessBinding, in: 1...10, step: 1)
-                    .onChange(of: state.brightness) {
+                    .onChange(of: state.preferences.brightness) {
                         state.applySettings()
                     }
 
                 Button("+") {
-                    if state.brightness < 10 {
-                        state.brightness += 1
+                    if state.preferences.brightness < 10 {
+                        state.preferences.brightness += 1
                         state.applySettings()
                     }
                 }
@@ -120,8 +120,8 @@ struct MenuBarView: View {
 
     private var brightnessBinding: Binding<Double> {
         Binding(
-            get: { Double(state.brightness) },
-            set: { state.brightness = Int($0) }
+            get: { Double(state.preferences.brightness) },
+            set: { state.preferences.brightness = Int($0) }
         )
     }
 }

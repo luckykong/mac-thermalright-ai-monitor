@@ -7,7 +7,6 @@
 
 import AppKit
 import os
-import Sparkle
 import SwiftUI
 
 private let mactrLogger = Logger(subsystem: "com.beret21.MacTR", category: "main")
@@ -42,6 +41,17 @@ struct MacTREntry {
         // GIF mode: render an animated demo GIF (for the README). No LCD needed.
         if CommandLine.arguments.contains("--gif") {
             runGif()
+            return
+        }
+
+        // Documentation mode: render the real SwiftUI settings interface to PNG.
+        if CommandLine.arguments.contains("--settings-snapshot") {
+            runSettingsSnapshot()
+            return
+        }
+
+        if CommandLine.arguments.contains("--menu-snapshot") {
+            runMenuSnapshot()
             return
         }
 
@@ -92,6 +102,129 @@ struct MacTREntry {
         let delegate = StatusBarController()
         app.delegate = delegate
         app.run()
+    }
+}
+
+// MARK: - Settings Documentation Snapshot
+
+@MainActor
+private func runSettingsSnapshot() {
+    let args = CommandLine.arguments
+    guard let index = args.firstIndex(of: "--settings-snapshot"),
+          index + 1 < args.count
+    else {
+        print("[Settings Snapshot] usage: --settings-snapshot output.png")
+        return
+    }
+
+    let suiteName = "com.beret21.MacTR.documentation"
+    guard let defaults = UserDefaults(suiteName: suiteName) else { return }
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    let preferences = AppPreferences(defaults: defaults)
+    preferences.scheduleEnabled = true
+    preferences.scheduleAction = .pauseDisplay
+    preferences.automaticStartEnabled = true
+    preferences.startMinutes = 8 * 60
+    preferences.closeMinutes = 23 * 60
+
+    let state = AppState(preferences: preferences)
+    let launchAtLogin = LaunchAtLoginController(availabilityOverride: true)
+    let rootView = SettingsView(
+        state: state,
+        launchAtLogin: launchAtLogin,
+        pauseDisplay: {},
+        resumeDisplay: {})
+        .preferredColorScheme(.dark)
+        .background(SwiftUI.Color(nsColor: .windowBackgroundColor))
+
+    let url = URL(fileURLWithPath: args[index + 1])
+    if renderDocumentationView(
+        rootView,
+        size: NSSize(width: 560, height: 620),
+        title: "MacTR Settings",
+        outputURL: url)
+    {
+        print("[Settings Snapshot] wrote \(url.path)")
+    } else {
+        print("[Settings Snapshot] failed")
+    }
+}
+
+@MainActor
+private func runMenuSnapshot() {
+    let args = CommandLine.arguments
+    guard let index = args.firstIndex(of: "--menu-snapshot"),
+          index + 1 < args.count
+    else {
+        print("[Menu Snapshot] usage: --menu-snapshot output.png")
+        return
+    }
+
+    let rootView = MenuDocumentationView()
+        .preferredColorScheme(.dark)
+    let url = URL(fileURLWithPath: args[index + 1])
+    if renderDocumentationView(
+        rootView,
+        size: NSSize(width: 360, height: 610),
+        title: "MacTR Menu",
+        outputURL: url)
+    {
+        print("[Menu Snapshot] wrote \(url.path)")
+    } else {
+        print("[Menu Snapshot] failed")
+    }
+}
+
+@MainActor
+private func renderDocumentationView<Content: View>(
+    _ rootView: Content,
+    size pointSize: NSSize,
+    title: String,
+    outputURL: URL
+) -> Bool {
+    let pixelScale = 2
+    let hostingView = NSHostingView(rootView: rootView)
+    hostingView.frame = NSRect(origin: .zero, size: pointSize)
+
+    let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: pointSize),
+        styleMask: [.titled],
+        backing: .buffered,
+        defer: false)
+    window.title = title
+    window.contentView = hostingView
+    window.orderOut(nil)
+
+    hostingView.layoutSubtreeIfNeeded()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    hostingView.layoutSubtreeIfNeeded()
+
+    guard let representation = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: Int(pointSize.width) * pixelScale,
+        pixelsHigh: Int(pointSize.height) * pixelScale,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0)
+    else { return false }
+    representation.size = pointSize
+    hostingView.cacheDisplay(in: hostingView.bounds, to: representation)
+
+    guard let png = representation.representation(using: .png, properties: [:]) else {
+        return false
+    }
+    do {
+        try png.write(to: outputURL)
+        return true
+    } catch {
+        log("[Documentation] Snapshot failed: \(error.localizedDescription)")
+        return false
     }
 }
 
@@ -158,26 +291,39 @@ final class PreviewController: NSObject, NSApplicationDelegate, NSWindowDelegate
 final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
 
     private var statusItem: NSStatusItem!
-    private let appState = AppState()
+    private let preferences = AppPreferences()
+    private lazy var appState = AppState(preferences: preferences)
+    private let launchAtLogin = LaunchAtLoginController()
+    private lazy var scheduleController = DailyScheduleController(
+        state: appState,
+        preferences: preferences
+    ) { [weak self] in
+        self?.performQuit(scheduled: true)
+    }
     private var menu: NSMenu!
 
-    // On-Mac preview — shown automatically while the LCD is disconnected
+    // On-Mac preview — manual by default; optional auto-fallback while disconnected.
     private var previewWindow: NSWindow?
     private var previewImageView: NSImageView?
     private var previewTimer: Timer?
-
-    // Sparkle auto-updater — only start when running from a real .app bundle;
-    // a bare `swift build` binary has no Info.plist for Sparkle to work with
-    private let updaterController = SPUStandardUpdaterController(
-        startingUpdater: Bundle.main.bundleIdentifier != nil
-            && Bundle.main.bundlePath.hasSuffix(".app"),
-        updaterDelegate: nil, userDriverDelegate: nil)
+    private var settingsWindow: NSWindow?
+    private var scheduleWindow: NSWindow?
 
     // Menu items that need updating
     private var statusMenuItem: NSMenuItem!
     private var versionMenuItem: NSMenuItem!
+    private var pauseResumeItem: NSMenuItem!
     private var reconnectItem: NSMenuItem!
+    private var previewItem: NSMenuItem!
+    private var launchAtLoginItem: NSMenuItem!
+    private var scheduleEnabledItem: NSMenuItem!
+    private var pauseActionItem: NSMenuItem!
+    private var quitActionItem: NSMenuItem!
+    private var automaticStartItem: NSMenuItem!
+    private var startTimeItem: NSMenuItem!
+    private var closeTimeItem: NSMenuItem!
     private var updateTimer: Timer?
+    private var notificationTokens: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("[*] MacTR starting...")
@@ -193,16 +339,30 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
 
         // Watch for device state changes — close menu so it refreshes
         // Update icon immediately on device state change
-        NotificationCenter.default.addObserver(
+        notificationTokens.append(NotificationCenter.default.addObserver(
             forName: .deviceStateChanged, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.updateIcon()
-            self?.updateMenuItems()
-            self?.updatePreviewForConnection()
-        }
+            Task { @MainActor in
+                self?.updateIcon()
+                self?.updateMenuItems()
+                self?.updatePreviewForConnection()
+            }
+        })
 
-        // Start engine
-        appState.start()
+        notificationTokens.append(NotificationCenter.default.addObserver(
+            forName: .appPreferencesChanged, object: preferences, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateMenuItems()
+                self?.updatePreviewForConnection()
+            }
+        })
+
+        // Reconcile the daily schedule before opening the USB device.
+        scheduleController.start()
+        if !appState.isPaused {
+            appState.start()
+        }
 
         // No LCD after the initial connect attempt → fall back to on-Mac preview.
         // Delayed so a present device can connect first without a window flash.
@@ -221,7 +381,14 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate()
+        scheduleController.stop()
+        notificationTokens.forEach(NotificationCenter.default.removeObserver)
+        notificationTokens.removeAll()
         appState.stop()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     // MARK: - NSMenuDelegate
@@ -235,12 +402,15 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     private func updateIcon() {
         guard let button = statusItem.button else { return }
-        button.image = makeIcon(disconnected: !appState.isConnected)
+        button.image = makeIcon(
+            disconnected: !appState.isConnected,
+            paused: appState.isPaused)
     }
 
-    /// Draw menu bar icon manually. Connected = white display. Disconnected = display + red badge.
-    private func makeIcon(disconnected: Bool) -> NSImage {
-        let w: CGFloat = disconnected ? 22 : 18
+    /// Connected = template display; paused = amber badge; disconnected = red badge.
+    private func makeIcon(disconnected: Bool, paused: Bool) -> NSImage {
+        let hasBadge = disconnected || paused
+        let w: CGFloat = hasBadge ? 22 : 18
         let h: CGFloat = 16
 
         let image = NSImage(size: NSSize(width: w, height: h), flipped: false) { rect in
@@ -270,24 +440,21 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
             basePath.lineWidth = 1.5
             basePath.stroke()
 
-            // Red badge (only when disconnected)
-            if disconnected {
+            if hasBadge {
                 let badgeD: CGFloat = 9
                 let badgeRect = NSRect(
                     x: rect.width - badgeD + 0.5,
                     y: rect.height - badgeD + 0.5,
                     width: badgeD, height: badgeD)
 
-                // Red circle
-                NSColor.red.setFill()
+                (paused ? NSColor.systemOrange : NSColor.systemRed).setFill()
                 NSBezierPath(ovalIn: badgeRect).fill()
 
-                // White "!"
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: 7, weight: .black),
                     .foregroundColor: NSColor.white,
                 ]
-                let mark = "!" as NSString
+                let mark = (paused ? "Ⅱ" : "!") as NSString
                 let markSize = mark.size(withAttributes: attrs)
                 mark.draw(at: NSPoint(
                     x: badgeRect.midX - markSize.width / 2,
@@ -298,9 +465,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
             return true
         }
 
-        // Template only when connected (so it adapts to dark/light mode)
-        // Non-template when disconnected (to keep red badge color)
-        image.isTemplate = !disconnected
+        image.isTemplate = !hasBadge
         return image
     }
 
@@ -309,52 +474,121 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
     private func buildMenu() {
         menu = NSMenu()
 
-        // App title + version
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.3.0"
+        let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.0"
         versionMenuItem = NSMenuItem(title: "MacTR v\(version)", action: nil, keyEquivalent: "")
         versionMenuItem.isEnabled = false
         menu.addItem(versionMenuItem)
 
-        // Status
         statusMenuItem = NSMenuItem(title: "Disconnected", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
 
         menu.addItem(.separator())
 
-        // Reconnect
+        pauseResumeItem = NSMenuItem(
+            title: "Pause Display Output",
+            action: #selector(togglePause),
+            keyEquivalent: "")
+        pauseResumeItem.target = self
+        menu.addItem(pauseResumeItem)
+
         reconnectItem = NSMenuItem(title: "Reconnect", action: #selector(reconnect), keyEquivalent: "r")
         reconnectItem.target = self
         menu.addItem(reconnectItem)
 
-        // Settings
-        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-
-        // Preview window (manual reopen after closing it)
-        let previewItem = NSMenuItem(title: "Preview Window", action: #selector(showPreviewManually), keyEquivalent: "p")
+        previewItem = NSMenuItem(
+            title: "Preview Window",
+            action: #selector(showPreviewManually),
+            keyEquivalent: "p")
         previewItem.target = self
         menu.addItem(previewItem)
 
         menu.addItem(.separator())
 
-        // Check for Updates
-        let checkUpdatesItem = NSMenuItem(
-            title: "Check for Updates...",
-            action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
-            keyEquivalent: "u")
-        checkUpdatesItem.target = updaterController
-        menu.addItem(checkUpdatesItem)
+        launchAtLoginItem = NSMenuItem(
+            title: "Launch at Login",
+            action: #selector(toggleLaunchAtLogin),
+            keyEquivalent: "")
+        launchAtLoginItem.target = self
+        menu.addItem(launchAtLoginItem)
 
-        // About
+        let scheduleItem = NSMenuItem(title: "Daily Schedule", action: nil, keyEquivalent: "")
+        let scheduleMenu = NSMenu()
+
+        scheduleEnabledItem = NSMenuItem(
+            title: "Enabled",
+            action: #selector(toggleSchedule),
+            keyEquivalent: "")
+        scheduleEnabledItem.target = self
+        scheduleMenu.addItem(scheduleEnabledItem)
+        scheduleMenu.addItem(.separator())
+
+        let closeActionItem = NSMenuItem(title: "At Close Time", action: nil, keyEquivalent: "")
+        let actionMenu = NSMenu()
+        pauseActionItem = NSMenuItem(
+            title: "Pause Display Output",
+            action: #selector(selectPauseAction),
+            keyEquivalent: "")
+        pauseActionItem.target = self
+        actionMenu.addItem(pauseActionItem)
+        quitActionItem = NSMenuItem(
+            title: "Quit MacTR",
+            action: #selector(selectQuitAction),
+            keyEquivalent: "")
+        quitActionItem.target = self
+        actionMenu.addItem(quitActionItem)
+        closeActionItem.submenu = actionMenu
+        scheduleMenu.addItem(closeActionItem)
+
+        automaticStartItem = NSMenuItem(
+            title: "Resume Automatically",
+            action: #selector(toggleAutomaticStart),
+            keyEquivalent: "")
+        automaticStartItem.target = self
+        scheduleMenu.addItem(automaticStartItem)
+
+        startTimeItem = NSMenuItem(title: "Resume: 08:00", action: nil, keyEquivalent: "")
+        startTimeItem.isEnabled = false
+        scheduleMenu.addItem(startTimeItem)
+
+        closeTimeItem = NSMenuItem(title: "Close: 23:00", action: nil, keyEquivalent: "")
+        closeTimeItem.isEnabled = false
+        scheduleMenu.addItem(closeTimeItem)
+        scheduleMenu.addItem(.separator())
+
+        let editScheduleItem = NSMenuItem(
+            title: "Edit Times...",
+            action: #selector(openScheduleEditor),
+            keyEquivalent: "")
+        editScheduleItem.target = self
+        scheduleMenu.addItem(editScheduleItem)
+
+        scheduleItem.submenu = scheduleMenu
+        menu.addItem(scheduleItem)
+
+        let settingsItem = NSMenuItem(
+            title: "Settings...",
+            action: #selector(openSettings),
+            keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        menu.addItem(.separator())
+
+        let releasesItem = NSMenuItem(
+            title: "View Latest Release...",
+            action: #selector(openLatestRelease),
+            keyEquivalent: "u")
+        releasesItem.target = self
+        menu.addItem(releasesItem)
+
         let aboutItem = NSMenuItem(title: "About MacTR", action: #selector(showAbout), keyEquivalent: "")
         aboutItem.target = self
         menu.addItem(aboutItem)
 
         menu.addItem(.separator())
 
-        // Quit
         let quitItem = NSMenuItem(title: "Quit MacTR", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -363,18 +597,49 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
 
     private func updateMenuItems() {
-        // Status
-        let dot = appState.isConnected ? "🟢" : "🔴"
+        launchAtLogin.refresh()
+
+        let dot: String
+        if appState.isPaused {
+            dot = "🟠"
+        } else if appState.isConnected {
+            dot = "🟢"
+        } else {
+            dot = "🔴"
+        }
         statusMenuItem.title = "\(dot) \(appState.statusMessage)"
 
-        // Reconnect visibility
-        reconnectItem.isHidden = appState.isConnected
+        pauseResumeItem.title = appState.isPaused
+            ? "Resume Display Output" : "Pause Display Output"
+        reconnectItem.isHidden = appState.isConnected || appState.isPaused
+        previewItem.isEnabled = !appState.isPaused
+
+        launchAtLoginItem.state = launchAtLogin.isEnabled ? .on : .off
+        launchAtLoginItem.isEnabled = launchAtLogin.isAvailable
+
+        scheduleEnabledItem.state = preferences.scheduleEnabled ? .on : .off
+        pauseActionItem.state = preferences.scheduleAction == .pauseDisplay ? .on : .off
+        quitActionItem.state = preferences.scheduleAction == .quitApp ? .on : .off
+        automaticStartItem.state = preferences.automaticStartEnabled ? .on : .off
+        automaticStartItem.isHidden = preferences.scheduleAction == .quitApp
+        startTimeItem.isHidden = preferences.scheduleAction == .quitApp
+            || !preferences.automaticStartEnabled
+        startTimeItem.title = "Resume: \(AppPreferences.formattedTime(minutes: preferences.startMinutes))"
+        closeTimeItem.title = "Close: \(AppPreferences.formattedTime(minutes: preferences.closeMinutes))"
+
+        if preferences.scheduleEnabled {
+            versionMenuItem.title = "MacTR v\(appVersion) • \(scheduleController.nextActionDescription)"
+        } else {
+            versionMenuItem.title = "MacTR v\(appVersion)"
+        }
     }
 
     // MARK: - Preview Window (auto-fallback when LCD is disconnected)
 
     private func updatePreviewForConnection() {
-        if appState.isConnected {
+        if appState.isPaused || appState.isConnected
+            || !preferences.autoShowPreviewWhenDisconnected
+        {
             hidePreview()
         } else {
             showPreview()
@@ -427,11 +692,11 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
 
     @objc private func showPreviewManually() {
+        guard !appState.isPaused else { return }
         showPreview()
     }
 
-    // User closed the preview window — stop rendering to it; reopen via the
-    // menu (⌘P) or automatically on the next connect/disconnect transition
+    // Closing Preview never quits the menu-bar app.
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow, window == previewWindow else { return }
         previewTimer?.invalidate()
@@ -440,25 +705,94 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     // MARK: - Actions
 
+    @objc private func togglePause() {
+        if appState.isPaused {
+            scheduleController.resumeManually()
+        } else {
+            scheduleController.pauseManually()
+        }
+        updateMenuItems()
+        updateIcon()
+        updatePreviewForConnection()
+    }
+
     @objc private func reconnect() {
         appState.connect()
     }
 
-    @objc private func openSettings() {
-        // Open settings window
-        let settingsView = SettingsView(state: appState)
-        let hostingController = NSHostingController(rootView: settingsView)
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "MacTR Settings"
-        window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 450, height: 350))
-        window.center()
-        window.makeKeyAndOrderFront(nil)
+    @objc private func toggleLaunchAtLogin() {
+        launchAtLogin.setEnabled(!launchAtLogin.isEnabled)
+        updateMenuItems()
+        if let message = launchAtLogin.errorMessage {
+            let alert = NSAlert()
+            alert.messageText = "Launch at Login"
+            alert.informativeText = message
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+    }
+
+    @objc private func toggleSchedule() {
+        preferences.scheduleEnabled.toggle()
+    }
+
+    @objc private func selectPauseAction() {
+        preferences.scheduleAction = .pauseDisplay
+    }
+
+    @objc private func selectQuitAction() {
+        preferences.scheduleAction = .quitApp
+    }
+
+    @objc private func toggleAutomaticStart() {
+        preferences.automaticStartEnabled.toggle()
+    }
+
+    @objc private func openScheduleEditor() {
+        if scheduleWindow == nil {
+            let view = ScheduleTimeEditorView(preferences: preferences)
+            let hostingController = NSHostingController(rootView: view)
+            let window = NSWindow(contentViewController: hostingController)
+            window.title = "MacTR Daily Schedule"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 360, height: 260))
+            window.center()
+            scheduleWindow = window
+        }
+        scheduleWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    @objc private func openSettings() {
+        if settingsWindow == nil {
+            let settingsView = SettingsView(
+                state: appState,
+                launchAtLogin: launchAtLogin,
+                pauseDisplay: { [weak self] in self?.scheduleController.pauseManually() },
+                resumeDisplay: { [weak self] in self?.scheduleController.resumeManually() })
+            let hostingController = NSHostingController(rootView: settingsView)
+            let window = NSWindow(contentViewController: hostingController)
+            window.title = "MacTR Settings"
+            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 560, height: 620))
+            window.center()
+            settingsWindow = window
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openLatestRelease() {
+        guard let url = URL(
+            string: "https://github.com/luckykong/mac-thermalright-ai-monitor/releases/latest")
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     @objc private func showAbout() {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
+        let version = appVersion
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
 
         let alert = NSAlert()
@@ -471,7 +805,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
             Trofeo Vision 9.16 LCD display.
 
             Built with Swift + libusb
-            github.com/beret21/MacTR
+            github.com/luckykong/mac-thermalright-ai-monitor
             """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
@@ -485,8 +819,21 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
 
     @objc private func quit() {
+        performQuit(scheduled: false)
+    }
+
+    private func performQuit(scheduled: Bool) {
+        if scheduled {
+            log("[Schedule] Closing MacTR at the configured daily time")
+        }
+        scheduleController.stop()
         appState.stop()
         NSApp.terminate(nil)
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.0"
     }
 }
 

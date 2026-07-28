@@ -1161,7 +1161,8 @@ private func runBenchmark() {
     let frames = parseFlag(args, flag: "--benchmark") ?? 120
     let brightness = parseFlag(args, flag: "-b") ?? 5
     // Matches the "Rotate 180°" setting: set for panels mounted the other way
-    // up, which means skipping the default rotation (hence `!rotate` below).
+    // up. It XORs with the panel's own `needsRotation` exactly as the GUI
+    // engine does in AppState, so both paths land the same way up.
     let rotate = args.contains("--rotate")
 
     print("[Bench] Frame-rate benchmark — \(frames) frames")
@@ -1172,8 +1173,10 @@ private func runBenchmark() {
     }
     defer { device.close() }
 
-    do { _ = try LYProtocol.handshake(device: device) }
+    let info: DeviceInfo
+    do { info = try LYProtocol.handshake(device: device) }
     catch { print("[Bench][ERROR] handshake failed: \(error)"); return }
+    let rotate180 = info.needsRotation != rotate
 
     let renderer = MonitorRenderer()
     renderer.startMetrics()
@@ -1184,7 +1187,7 @@ private func runBenchmark() {
     // Warm up: first render + JPEG/rotation contexts allocate; discard 5 frames
     for _ in 0..<5 {
         if let img = renderer.render(),
-           let j = JPEGEncoder.encode(img, brightness: brightness, rotate180: !rotate) {
+           let j = JPEGEncoder.encode(img, brightness: brightness, rotate180: rotate180) {
             try? LYProtocol.sendFrame(device: device, jpegData: j)
         }
     }
@@ -1198,7 +1201,7 @@ private func runBenchmark() {
         let r0 = now()
         guard let image = renderer.render() else { continue }
         let r1 = now()
-        guard let jpeg = JPEGEncoder.encode(image, brightness: brightness, rotate180: !rotate) else { continue }
+        guard let jpeg = JPEGEncoder.encode(image, brightness: brightness, rotate180: rotate180) else { continue }
         let r2 = now()
         do { try LYProtocol.sendFrame(device: device, jpegData: jpeg) }
         catch { print("[Bench][ERROR] send failed at frame \(sent): \(error)"); break }
@@ -1304,8 +1307,10 @@ private func runDemo() {
         return
     }
     defer { device.close() }
-    do { _ = try LYProtocol.handshake(device: device) }
+    let info: DeviceInfo
+    do { info = try LYProtocol.handshake(device: device) }
     catch { print("[Demo][ERROR] handshake failed: \(error)"); return }
+    let rotate180 = info.needsRotation != rotate
 
     let renderer = MonitorRenderer()
     renderer.demoMode = true
@@ -1314,7 +1319,7 @@ private func runDemo() {
     while true {
         autoreleasepool {
             if let image = renderer.render(),
-               let jpeg = JPEGEncoder.encode(image, brightness: brightness, rotate180: !rotate) {
+               let jpeg = JPEGEncoder.encode(image, brightness: brightness, rotate180: rotate180) {
                 try? LYProtocol.sendFrame(device: device, jpegData: jpeg)
             }
         }
@@ -1327,7 +1332,8 @@ private func runCLI() {
     let isTest = args.contains("--test")
     let brightness = parseFlag(args, flag: "-b") ?? 5
     // Matches the "Rotate 180°" setting: set for panels mounted the other way
-    // up, which means skipping the default rotation (hence `!rotate` below).
+    // up. It XORs with the panel's own `needsRotation` exactly as the GUI
+    // engine does in AppState, so both paths land the same way up.
     let rotate = args.contains("--rotate")
 
     log("[*] MacTR CLI — \(isTest ? "USB Test" : "System Monitor")")
@@ -1371,7 +1377,9 @@ private func runCLI() {
         var count = 0
         while true {
             guard let image = renderer.render(),
-                  let jpeg = JPEGEncoder.encode(image, brightness: brightness, rotate180: !rotate)
+                  let jpeg = JPEGEncoder.encode(
+                      image, brightness: brightness,
+                      rotate180: info.needsRotation != rotate)
             else {
                 Thread.sleep(forTimeInterval: 1)
                 continue

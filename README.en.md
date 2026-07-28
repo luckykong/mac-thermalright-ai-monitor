@@ -245,6 +245,17 @@ swift build -c release
 This quick build may depend on `/opt/homebrew` and should not be copied to another Mac.
 Use `packaging/build-release.sh` for a transferable private build.
 
+### Running tests
+
+```bash
+./scripts/test.sh
+```
+
+The tests use swift-testing. It ships with the Command Line Tools, but SwiftPM does
+not add its framework and dylib directories to the search paths, so a bare
+`swift test` fails with `no such module 'Testing'`. The script supplies those paths;
+with a full Xcode install it skips them and calls `swift test` directly.
+
 ## Modes
 
 ```bash

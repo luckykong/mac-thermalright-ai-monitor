@@ -70,6 +70,13 @@ All notable changes to MacTR are documented here.
   documentation all contradicted its `if !rotate { …rotate… }` implementation.
   It is now `rotate180`, and the handshake's `needsRotation` — parsed since
   1.0 but never read — is finally used.
+- Fixed `--cli`, `--demo` and `--benchmark` ignoring the panel's own
+  `needsRotation`. All three already performed the handshake and discarded the
+  result, so they assumed a panel that needs rotating and would have driven the
+  display upside down relative to the menu-bar app on one that does not.
+- Fixed the Claude agent scan reading every session file modified today with no
+  upper bound, and a data race the compiler flagged on the quota fetcher's
+  result, which was a plain `var` written from the URLSession callback.
 - Fixed custom-card output being contaminated by the script's stderr. The two
   streams shared one pipe, so warnings and exception text (potentially
   including credentials) were rendered on the LCD.

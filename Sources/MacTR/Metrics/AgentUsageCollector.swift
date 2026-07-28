@@ -96,6 +96,15 @@ final class AgentUsageCollector: @unchecked Sendable {
     private static let maxSeenIDs = 200_000
     private var claudeSeenIDs: Set<String> = []
     private var claudeSeenIDsOverflowed = false
+    /// Ceiling on how many of today's session files are read per cycle. There is
+    /// no bound on how many project directories `~/.claude/projects` accumulates,
+    /// and this runs every few seconds for as long as the app is up.
+    ///
+    /// Deliberately not a directory-mtime prefilter: appending to a JSONL does
+    /// not touch its parent directory's mtime, so that test would skip exactly
+    /// the projects being written to right now.
+    private static let maxScannedFiles = 200
+    private var claudeScanOverflowed = false
     private var claudeInput: UInt64 = 0
     private var claudeOutput: UInt64 = 0
     private var codexOffsets: [String: UInt64] = [:]
@@ -138,6 +147,7 @@ final class AgentUsageCollector: @unchecked Sendable {
 
         claudeOffsets = [:]; claudeSeenIDs = []; claudeInput = 0; claudeOutput = 0
         claudeSeenIDsOverflowed = false
+        claudeScanOverflowed = false
         codexOffsets = [:]; codexInput = 0; codexOutput = 0
     }
 
@@ -153,6 +163,7 @@ final class AgentUsageCollector: @unchecked Sendable {
         let todayStart = Calendar.current.startOfDay(for: Date())
         var latestPath: String?
         var latestMtime = Date.distantPast
+        var todaysFiles: [(path: String, mtime: Date, size: UInt64)] = []
 
         for projDir in (try? fm.contentsOfDirectory(atPath: root)) ?? [] {
             let dirPath = root + "/" + projDir
@@ -169,10 +180,26 @@ final class AgentUsageCollector: @unchecked Sendable {
                 // Token counting is scoped to today only
                 guard mtime >= todayStart else { continue }
                 let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
-                consumeNewLines(path: path, size: size, offsets: &claudeOffsets,
-                                prefilter: "\"type\":\"assistant\"") { line in
-                    self.accumulateClaudeLine(line)
-                }
+                todaysFiles.append((path, mtime, size))
+            }
+        }
+
+        // Listing names is cheap; opening and parsing the files is not, so only
+        // the read is bounded. Newest first, so if the cap ever bites it drops
+        // the sessions that have been idle longest today — never the live one.
+        if todaysFiles.count > Self.maxScannedFiles {
+            todaysFiles.sort { $0.mtime > $1.mtime }
+            todaysFiles.removeLast(todaysFiles.count - Self.maxScannedFiles)
+            if !claudeScanOverflowed {
+                claudeScanOverflowed = true
+                log("[Agents] More than \(Self.maxScannedFiles) Claude session files"
+                    + " modified today; reading only the most recent ones.")
+            }
+        }
+        for entry in todaysFiles {
+            consumeNewLines(path: entry.path, size: entry.size, offsets: &claudeOffsets,
+                            prefilter: "\"type\":\"assistant\"") { line in
+                self.accumulateClaudeLine(line)
             }
         }
 

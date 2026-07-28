@@ -174,6 +174,28 @@ final class ClaudeUsageFetcher: @unchecked Sendable {
         init(_ reason: String) { self.reason = reason }
     }
 
+    /// The completion handler writes on URLSession's queue while `fetch` blocks
+    /// on the semaphore. The signal/wait pair already orders the write before the
+    /// read, but that ordering is invisible to the compiler, so the value travels
+    /// through a lock it can see rather than a captured `var`.
+    private final class FetchResultBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Result<[String: Any], FetchFailure> =
+            .failure(FetchFailure("request never completed"))
+
+        func set(_ newValue: Result<[String: Any], FetchFailure>) {
+            lock.lock()
+            defer { lock.unlock() }
+            value = newValue
+        }
+
+        func get() -> Result<[String: Any], FetchFailure> {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
     private static func fetch(token: String) -> Result<[String: Any], FetchFailure> {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
@@ -182,33 +204,32 @@ final class ClaudeUsageFetcher: @unchecked Sendable {
         request.setValue(betaHeader, forHTTPHeaderField: "anthropic-beta")
 
         let semaphore = DispatchSemaphore(value: 0)
-        var result: Result<[String: Any], FetchFailure> =
-            .failure(FetchFailure("request never completed"))
+        let result = FetchResultBox()
 
         let task = URLSession.shared.dataTask(with: request) { data, response, error in
             defer { semaphore.signal() }
             if let error {
-                result = .failure(FetchFailure(error.localizedDescription))
+                result.set(.failure(FetchFailure(error.localizedDescription)))
                 return
             }
             guard let http = response as? HTTPURLResponse else {
-                result = .failure(FetchFailure("no HTTP response"))
+                result.set(.failure(FetchFailure("no HTTP response")))
                 return
             }
             guard http.statusCode == 200 else {
                 // 401/403 usually means the token lacks the usage scope; 429 is
                 // the endpoint asking us to back off. Both just mean "no data".
-                result = .failure(FetchFailure("HTTP \(http.statusCode)"))
+                result.set(.failure(FetchFailure("HTTP \(http.statusCode)")))
                 return
             }
             guard let data,
                   let json = (try? JSONSerialization.jsonObject(with: data))
                       as? [String: Any]
             else {
-                result = .failure(FetchFailure("unreadable response body"))
+                result.set(.failure(FetchFailure("unreadable response body")))
                 return
             }
-            result = .success(json)
+            result.set(.success(json))
         }
         task.resume()
 
@@ -216,7 +237,7 @@ final class ClaudeUsageFetcher: @unchecked Sendable {
             task.cancel()
             return .failure(FetchFailure("timed out"))
         }
-        return result
+        return result.get()
     }
 
     private static func parse(_ payload: [String: Any]) -> [QuotaWindow] {

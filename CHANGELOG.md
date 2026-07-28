@@ -2,6 +2,54 @@
 
 All notable changes to MacTR are documented here.
 
+## [1.4.3] - 2026-07-28
+
+1.4.2 was prepared but never tagged or released, so its entries below ship here
+for the first time. This section covers what came after it.
+
+### Changed
+
+- Halved the renderer's CPU cost by memoizing text measurement and the custom
+  card's font-size search. Measuring strings was the dominant cost and nearly
+  all of it was repeated work: the dashboard redraws 2-4 times a second while
+  its data changes every couple of seconds. The worst offender walked up to
+  fourteen candidate font sizes measuring once per character, every frame, for
+  text produced by a script on a five-minute timer. Render fell from 11.4 ms to
+  6.7 ms per frame and the whole app from roughly 26% to 14% of one core.
+- Split `MonitorRenderer`'s 1776 lines by panel region into the class plus four
+  extensions. The extracted bodies are byte-identical to the lines they
+  replaced.
+- `Fonts` no longer caches into an unsynchronised dictionary mutated from
+  whichever thread is drawing, and `Fonts.mono` is cached at all — it was not,
+  despite being called once per candidate size inside that search.
+
+### Fixed
+
+- Fixed a busy device leaving the engine disconnected indefinitely. A panel
+  owned by another process and a panel that is simply absent returned the same
+  "nothing to do", but only the absent case is woken by a hotplug event —
+  releasing a USB interface announces nothing. Quitting whatever held the panel
+  now recovers on the existing 5-60 s backoff instead of waiting for the user to
+  replug.
+- Stopped logging a custom script's stderr verbatim. It is arbitrary user
+  content that routinely carries credentials, and `log` persists at `.notice`
+  with public privacy, so splitting stderr away from the card in 1.4.2 kept
+  secrets off the LCD only to write them somewhere they lasted longer. Only the
+  byte count is logged now; the text reaches an attached terminal and no
+  further.
+- Fixed a rejected frame being reported as a dead device. `frameTooLarge` shared
+  a catch with genuine USB errors, so a local encoding problem closed a healthy
+  panel and reconnected into the same oversized frame forever. It could reach
+  the wire at all because the encoder's quality ladder returned its lowest rung
+  without re-checking the size.
+- Finished bounding both agent transcript scans. The Claude cap covered only the
+  file reads, leaving the per-file stat and the candidate array unbounded, and
+  Codex had no cap at all.
+- The handshake now refuses a panel that does not accept JPEG instead of sending
+  it anyway, which would paint garbage. This also covers the CLI paths, which
+  never checked.
+- The frame size limit has a single definition rather than one per file.
+
 ## [1.4.2] - 2026-07-28
 
 ### Added

@@ -492,10 +492,6 @@ final class DisplayEngine: @unchecked Sendable {
             device = dev
             postStatus(.running, deviceInfo: info,
                        message: "Connected (\(info.width)x\(info.height))")
-            if !info.usesJPEG {
-                log("[Engine] Device reports a non-JPEG frame format;"
-                    + " MacTR only implements JPEG and will send it anyway.")
-            }
             return (dev, info)
         } catch {
             dev.close()

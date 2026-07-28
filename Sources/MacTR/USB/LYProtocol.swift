@@ -144,6 +144,13 @@ enum LYProtocol {
         log("[OK] Handshake successful — PM=\(pm) SUB=\(sub) FBL=\(fbl)"
             + " \(width)x\(height) JPEG=\(usesJPEG) rotate=\(needsRotation)")
 
+        // JPEG is the only frame format MacTR encodes. Sending it to a panel
+        // that asked for something else paints garbage, so refuse instead.
+        // Every profile in the table above says true, as does the fallback for
+        // unknown FBLs, so this can only fire for a profile added later — which
+        // is exactly who needs to be told rather than shown a broken panel.
+        guard usesJPEG else { throw LYError.unsupportedFrameFormat }
+
         return info
     }
 
@@ -246,11 +253,13 @@ enum LYProtocol {
 enum LYError: Error, CustomStringConvertible {
     case handshakeFailed
     case frameTooLarge(Int)
+    case unsupportedFrameFormat
 
     var description: String {
         switch self {
         case .handshakeFailed: "Handshake validation failed"
         case .frameTooLarge(let size): "JPEG frame too large: \(size) bytes (max \(maxJPEGSize))"
+        case .unsupportedFrameFormat: "Device does not accept JPEG frames"
         }
     }
 }

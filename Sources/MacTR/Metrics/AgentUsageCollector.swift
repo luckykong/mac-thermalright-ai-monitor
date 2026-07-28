@@ -105,6 +105,7 @@ final class AgentUsageCollector: @unchecked Sendable {
     /// the projects being written to right now.
     private static let maxScannedFiles = 200
     private var claudeScanOverflowed = false
+    private var codexScanOverflowed = false
     private var claudeInput: UInt64 = 0
     private var claudeOutput: UInt64 = 0
     private var codexOffsets: [String: UInt64] = [:]
@@ -148,10 +149,88 @@ final class AgentUsageCollector: @unchecked Sendable {
         claudeOffsets = [:]; claudeSeenIDs = []; claudeInput = 0; claudeOutput = 0
         claudeSeenIDsOverflowed = false
         claudeScanOverflowed = false
+        codexScanOverflowed = false
         codexOffsets = [:]; codexInput = 0; codexOutput = 0
     }
 
     // MARK: - Claude
+
+    private struct SessionFile {
+        let path: String
+        let mtime: Date
+        let size: UInt64
+    }
+
+    private struct ScannedSessions {
+        /// Newest first, never longer than the limit passed to `scanSessions`.
+        var files: [SessionFile] = []
+        /// Newest session of any day — drives the activity/project display, so
+        /// the column isn't blank on a day with no runs yet.
+        var latestPath: String?
+        var latestMtime = Date.distantPast
+        /// More of today's files existed than the limit allowed.
+        var overflowed = false
+    }
+
+    /// One pass over `dirs`, keeping only the newest `limit` files modified
+    /// since `todayStart`.
+    ///
+    /// Attributes come from the directory enumeration's prefetch rather than a
+    /// separate `attributesOfItem` per file, and the result array is capped as
+    /// it is built instead of being collected in full and trimmed afterwards.
+    /// Both matter only for a home directory with a very large number of
+    /// sessions, which is exactly the case that had no ceiling at all.
+    private func scanSessions(
+        dirs: [String], todayStart: Date, limit: Int
+    ) -> ScannedSessions {
+        var result = ScannedSessions()
+        result.files.reserveCapacity(min(limit, 64))
+        var todayCount = 0
+
+        for dir in dirs {
+            let contents = try? fm.contentsOfDirectory(
+                at: URL(fileURLWithPath: dir),
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                options: [.skipsHiddenFiles])
+            for url in contents ?? [] {
+                guard url.pathExtension == "jsonl" else { continue }
+                guard let values = try? url.resourceValues(
+                        forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                      let mtime = values.contentModificationDate
+                else { continue }
+
+                if mtime > result.latestMtime {
+                    result.latestMtime = mtime
+                    result.latestPath = url.path
+                }
+
+                guard mtime >= todayStart else { continue }
+                todayCount += 1
+                let entry = SessionFile(
+                    path: url.path, mtime: mtime,
+                    size: UInt64(values.fileSize ?? 0))
+
+                if result.files.count < limit {
+                    result.files.append(entry)
+                    if result.files.count == limit {
+                        result.files.sort { $0.mtime > $1.mtime }
+                    }
+                } else if let oldest = result.files.last, entry.mtime > oldest.mtime {
+                    // Sorted newest-first from here on, so the tail is the one
+                    // to drop and the newcomer bubbles up to its place.
+                    result.files[result.files.count - 1] = entry
+                    var i = result.files.count - 1
+                    while i > 0, result.files[i].mtime > result.files[i - 1].mtime {
+                        result.files.swapAt(i, i - 1)
+                        i -= 1
+                    }
+                }
+            }
+        }
+        if result.files.count < limit { result.files.sort { $0.mtime > $1.mtime } }
+        result.overflowed = todayCount > limit
+        return result
+    }
 
     private func collectClaude() -> AgentUsage {
         let root = home + "/.claude/projects"
@@ -161,42 +240,19 @@ final class AgentUsageCollector: @unchecked Sendable {
         }
 
         let todayStart = Calendar.current.startOfDay(for: Date())
-        var latestPath: String?
-        var latestMtime = Date.distantPast
-        var todaysFiles: [(path: String, mtime: Date, size: UInt64)] = []
+        let projectDirs = ((try? fm.contentsOfDirectory(atPath: root)) ?? [])
+            .map { root + "/" + $0 }
+        let scan = scanSessions(
+            dirs: projectDirs, todayStart: todayStart, limit: Self.maxScannedFiles)
+        let latestPath = scan.latestPath
+        let latestMtime = scan.latestMtime
 
-        for projDir in (try? fm.contentsOfDirectory(atPath: root)) ?? [] {
-            let dirPath = root + "/" + projDir
-            for file in (try? fm.contentsOfDirectory(atPath: dirPath)) ?? [] {
-                guard file.hasSuffix(".jsonl") else { continue }
-                let path = dirPath + "/" + file
-                guard let attrs = try? fm.attributesOfItem(atPath: path),
-                      let mtime = attrs[.modificationDate] as? Date
-                else { continue }
-                // Latest session overall (any day) — drives the activity/project
-                // display so the column isn't blank on a day with no runs yet
-                if mtime > latestMtime { latestMtime = mtime; latestPath = path }
-
-                // Token counting is scoped to today only
-                guard mtime >= todayStart else { continue }
-                let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
-                todaysFiles.append((path, mtime, size))
-            }
+        if scan.overflowed, !claudeScanOverflowed {
+            claudeScanOverflowed = true
+            log("[Agents] More than \(Self.maxScannedFiles) Claude session files"
+                + " modified today; reading only the most recent ones.")
         }
-
-        // Listing names is cheap; opening and parsing the files is not, so only
-        // the read is bounded. Newest first, so if the cap ever bites it drops
-        // the sessions that have been idle longest today — never the live one.
-        if todaysFiles.count > Self.maxScannedFiles {
-            todaysFiles.sort { $0.mtime > $1.mtime }
-            todaysFiles.removeLast(todaysFiles.count - Self.maxScannedFiles)
-            if !claudeScanOverflowed {
-                claudeScanOverflowed = true
-                log("[Agents] More than \(Self.maxScannedFiles) Claude session files"
-                    + " modified today; reading only the most recent ones.")
-            }
-        }
-        for entry in todaysFiles {
+        for entry in scan.files {
             consumeNewLines(path: entry.path, size: entry.size, offsets: &claudeOffsets,
                             prefilter: "\"type\":\"assistant\"") { line in
                 self.accumulateClaudeLine(line)
@@ -390,26 +446,23 @@ final class AgentUsageCollector: @unchecked Sendable {
             }
         }
 
-        var latestPath: String?
-        var latestMtime = Date.distantPast
+        // Bounded the same way as Claude's. The fourteen-day window already caps
+        // how many directories are visited, but not how many sessions a single
+        // day may hold.
+        let scan = scanSessions(
+            dirs: dirs, todayStart: todayStart, limit: Self.maxScannedFiles)
+        let latestPath = scan.latestPath
+        let latestMtime = scan.latestMtime
 
-        for dir in dirs {
-            for file in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] {
-                guard file.hasSuffix(".jsonl") else { continue }
-                let path = dir + "/" + file
-                guard let attrs = try? fm.attributesOfItem(atPath: path),
-                      let mtime = attrs[.modificationDate] as? Date
-                else { continue }
-                // Latest session overall — drives activity/quota display
-                if mtime > latestMtime { latestMtime = mtime; latestPath = path }
-
-                // Token counting is scoped to today only
-                guard mtime >= todayStart else { continue }
-                let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
-                consumeNewLines(path: path, size: size, offsets: &codexOffsets,
-                                prefilter: "\"token_count\"") { line in
-                    self.accumulateCodexLine(line)
-                }
+        if scan.overflowed, !codexScanOverflowed {
+            codexScanOverflowed = true
+            log("[Agents] More than \(Self.maxScannedFiles) Codex session files"
+                + " modified today; reading only the most recent ones.")
+        }
+        for entry in scan.files {
+            consumeNewLines(path: entry.path, size: entry.size, offsets: &codexOffsets,
+                            prefilter: "\"token_count\"") { line in
+                self.accumulateCodexLine(line)
             }
         }
 

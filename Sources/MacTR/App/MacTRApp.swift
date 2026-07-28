@@ -1360,7 +1360,10 @@ private func runCLI() {
     }
 
     if isTest {
-        guard let jpeg = makeTestJPEG(width: info.width, height: info.height) else {
+        guard let jpeg = makeTestJPEG(
+            width: info.width, height: info.height,
+            brightness: brightness, rotate180: info.needsRotation != rotate)
+        else {
             log("[ERROR] Failed to create test image")
             return
         }
@@ -1436,7 +1439,8 @@ private func parseLanguage(_ args: [String]) -> AppLanguage {
 
 // MARK: - Test Image
 
-func makeTestJPEG(width: Int, height: Int) -> Data? {
+func makeTestJPEG(width: Int, height: Int,
+                  brightness: Int = 1, rotate180: Bool = true) -> Data? {
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     guard let ctx = CGContext(
         data: nil, width: width, height: height,
@@ -1483,5 +1487,5 @@ func makeTestJPEG(width: Int, height: Int) -> Data? {
     ctx.restoreGState()
 
     guard let image = ctx.makeImage() else { return nil }
-    return JPEGEncoder.encode(image)
+    return JPEGEncoder.encode(image, brightness: brightness, rotate180: rotate180)
 }

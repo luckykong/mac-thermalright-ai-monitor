@@ -2,8 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="1.4.1"
-BUILD_NUMBER="141"
+# Info.plist is the single source of truth for the version. It used to be
+# duplicated here and in several Swift fallbacks, which then drifted apart.
+INFO_PLIST_SOURCE="${ROOT_DIR}/Sources/MacTR/Resources/Info.plist"
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${INFO_PLIST_SOURCE}")"
+BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${INFO_PLIST_SOURCE}")"
 MIN_MACOS="15.0"
 ARCH="arm64"
 LIBUSB_VERSION="1.0.30"
@@ -84,10 +87,8 @@ cp "${ROOT_DIR}/packaging/THIRD_PARTY_NOTICES.md" \
 cp "${SOURCE_DIR}/libusb-${LIBUSB_VERSION}/COPYING" \
     "${APP_DIR}/Contents/Resources/Licenses/libusb-COPYING"
 
-plutil -replace CFBundleShortVersionString -string "${VERSION}" \
-    "${APP_DIR}/Contents/Info.plist"
-plutil -replace CFBundleVersion -string "${BUILD_NUMBER}" \
-    "${APP_DIR}/Contents/Info.plist"
+# The copied Info.plist already carries the version fields these were read
+# from, so only the deployment target needs stamping here.
 plutil -replace LSMinimumSystemVersion -string "${MIN_MACOS}" \
     "${APP_DIR}/Contents/Info.plist"
 

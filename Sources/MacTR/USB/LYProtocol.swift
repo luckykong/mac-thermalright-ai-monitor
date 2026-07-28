@@ -33,7 +33,12 @@ private let chunkSize = 512
 private let chunkHeaderSize = 16
 private let chunkDataSize = 496  // 512 - 16
 private let usbWriteSize = 4096
-private let maxJPEGSize = 650_000
+
+/// The wire limit for one frame, and the only copy of it. `JPEGEncoder` reads
+/// this for its own default budget: the two used to be independent `650_000`
+/// literals in different files, so raising one without the other would have
+/// left the encoder happily producing frames the protocol then rejected.
+let maxJPEGSize = 650_000
 
 // PM → FBL overrides
 private let pmToFBL: [Int: Int] = [
@@ -69,12 +74,12 @@ enum LYProtocol {
 
         // Send handshake
         _ = try device.bulkWrite(payload, timeout: 1000)
-        print("[LY] Handshake sent (2048 bytes)")
+        logVerbose("[LY] Handshake sent (2048 bytes)")
 
         // Read response
         let resp = try device.bulkRead(size: 512, timeout: 1000)
-        print("[LY] Response: \(resp.count) bytes")
-        print("[LY] Hex (first 48): \(resp.prefix(48).map { String(format: "%02x", $0) }.joined(separator: " "))")
+        logVerbose("[LY] Response: \(resp.count) bytes")
+        logVerbose("[LY] Hex (first 48): \(resp.prefix(48).map { String(format: "%02x", $0) }.joined(separator: " "))")
 
         // Validate
         guard resp.count >= 37,
@@ -85,7 +90,7 @@ enum LYProtocol {
             let b0 = resp.count > 0 ? String(format: "%02x", resp[0]) : "??"
             let b1 = resp.count > 1 ? String(format: "%02x", resp[1]) : "??"
             let b8 = resp.count > 8 ? String(format: "%02x", resp[8]) : "??"
-            print("[ERROR] Handshake validation failed: [0]=\(b0) [1]=\(b1) [8]=\(b8)")
+            log("[ERROR] Handshake validation failed: [0]=\(b0) [1]=\(b1) [8]=\(b8)")
             throw LYError.handshakeFailed
         }
 
@@ -94,7 +99,7 @@ enum LYProtocol {
         let sub: Int
         let pid = device.pid
 
-        if pid == 0x5408 {  // LY type
+        if pid == USBDeviceIdentity.ly {  // LY type
             var rawPM = Int(resp[20])
             if rawPM <= 3 { rawPM = 1 }
             pm = 64 + rawPM
@@ -136,10 +141,15 @@ enum LYProtocol {
             usesJPEG: usesJPEG, needsRotation: needsRotation,
             pid: pid)
 
-        print("[OK] Handshake successful!")
-        print("     PM=\(pm), SUB=\(sub), FBL=\(fbl)")
-        print("     Resolution: \(width)x\(height)")
-        print("     JPEG mode: \(usesJPEG), Rotate: \(needsRotation)")
+        log("[OK] Handshake successful — PM=\(pm) SUB=\(sub) FBL=\(fbl)"
+            + " \(width)x\(height) JPEG=\(usesJPEG) rotate=\(needsRotation)")
+
+        // JPEG is the only frame format MacTR encodes. Sending it to a panel
+        // that asked for something else paints garbage, so refuse instead.
+        // Every profile in the table above says true, as does the fallback for
+        // unknown FBLs, so this can only fire for a profile added later — which
+        // is exactly who needs to be told rather than shown a broken panel.
+        guard usesJPEG else { throw LYError.unsupportedFrameFormat }
 
         return info
     }
@@ -147,9 +157,12 @@ enum LYProtocol {
     /// Send one JPEG frame using LY chunked bulk protocol.
     static func sendFrame(device: USBDevice, jpegData: Data) throws {
         let pid = device.pid
-        let chunkCmd: UInt8 = (pid == 0x5408) ? 0x01 : 0x02
+        let chunkCmd: UInt8 = (pid == USBDeviceIdentity.ly) ? 0x01 : 0x02
 
         let totalSize = jpegData.count
+        guard totalSize <= maxJPEGSize else {
+            throw LYError.frameTooLarge(totalSize)
+        }
         let numChunks = totalSize / chunkDataSize + 1
         let lastChunkData = totalSize % chunkDataSize
 
@@ -197,7 +210,7 @@ enum LYProtocol {
         }
 
         // Pad chunk count to multiple of 4 (LY type) or 1 (LY1)
-        let padMultiple = (pid == 0x5408) ? 4 : 1
+        let padMultiple = (pid == USBDeviceIdentity.ly) ? 4 : 1
         var paddedChunks = numChunks
         let remainder = paddedChunks % padMultiple
         if remainder != 0 {
@@ -219,11 +232,15 @@ enum LYProtocol {
             if remaining >= usbWriteSize {
                 writeSize = usbWriteSize
             } else {
-                writeSize = (pid == 0x5408) ? min(2048, remaining) : remaining
+                writeSize = (pid == USBDeviceIdentity.ly) ? min(2048, remaining) : remaining
             }
             let slice = sendBuf[pos..<pos + writeSize]
             _ = try device.bulkWrite(Data(slice), timeout: 5000)
-            pos += usbWriteSize
+            // Advance by what was actually written. This used to add
+            // usbWriteSize unconditionally, which only happened to be correct
+            // because padding makes totalBytes a multiple of 2048 for LY —
+            // any change to padMultiple would have silently truncated frames.
+            pos += writeSize
         }
 
         // Read ACK
@@ -236,11 +253,13 @@ enum LYProtocol {
 enum LYError: Error, CustomStringConvertible {
     case handshakeFailed
     case frameTooLarge(Int)
+    case unsupportedFrameFormat
 
     var description: String {
         switch self {
         case .handshakeFailed: "Handshake validation failed"
         case .frameTooLarge(let size): "JPEG frame too large: \(size) bytes (max \(maxJPEGSize))"
+        case .unsupportedFrameFormat: "Device does not accept JPEG frames"
         }
     }
 }

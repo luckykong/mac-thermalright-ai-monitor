@@ -12,8 +12,48 @@ import SwiftUI
 
 private let mactrLogger = Logger(subsystem: "com.beret21.MacTR", category: "main")
 
+/// True in the argument-driven console modes, where the user is watching a
+/// terminal rather than the menu bar. os_log writes nothing to stdout/stderr,
+/// so without this `--cli` ran completely silently.
+let isConsoleMode: Bool = {
+    let consoleFlags: Set<String> = [
+        "--cli", "--benchmark", "--demo", "--gif", "--smc-test",
+        "--snapshot", "--settings-snapshot", "--menu-snapshot",
+    ]
+    return CommandLine.arguments.contains { consoleFlags.contains($0) }
+}()
+
+/// Use `.notice`, not `.info`: info-level entries are not persisted to the log
+/// store by default, so a running MacTR left nothing behind for `log show` to
+/// retrieve after a problem.
 func log(_ message: String) {
-    mactrLogger.info("\(message, privacy: .public)")
+    mactrLogger.notice("\(message, privacy: .public)")
+    if isConsoleMode {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
+}
+
+/// Diagnostics worth having at a terminal but not worth writing to the log
+/// store on every single reconnect — hex dumps and the like.
+func logVerbose(_ message: String) {
+    guard isConsoleMode else { return }
+    FileHandle.standardError.write(Data((message + "\n").utf8))
+}
+
+/// Version strings, read from the bundle Info.plist that packaging stamps.
+/// Every call site used to carry its own hardcoded fallback copy of the
+/// then-current version, so the numbers drifted apart between releases. The
+/// fallbacks here are deliberately not real versions: seeing "dev" means the
+/// bare SwiftPM binary is running outside an app bundle.
+enum AppVersion {
+    static var short: String {
+        Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+
+    static var build: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+    }
 }
 
 // MARK: - App Entry Point
@@ -453,6 +493,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
     // MARK: - NSMenuDelegate
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        launchAtLogin.refresh()
         updateIcon()
         updateMenuItems()
     }
@@ -534,9 +575,8 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
         let language = preferences.language
         menu = NSMenu()
 
-        let version = Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.1"
-        versionMenuItem = NSMenuItem(title: "MacTR v\(version)", action: nil, keyEquivalent: "")
+        versionMenuItem = NSMenuItem(
+            title: "MacTR v\(AppVersion.short)", action: nil, keyEquivalent: "")
         versionMenuItem.isEnabled = false
         menu.addItem(versionMenuItem)
 
@@ -834,8 +874,11 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
         NSApp.terminate(nil)
     }
 
+    // NOTE: deliberately does not call launchAtLogin.refresh(). This runs from a
+    // 1 s timer, and refresh() is an XPC round trip to SMAppService — one per
+    // second, forever, for a value that changes about never. It is refreshed
+    // when the menu is about to open and when Settings appears instead.
     private func updateMenuItems() {
-        launchAtLogin.refresh()
         let language = preferences.language
 
         let dot: String
@@ -1057,6 +1100,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
             window.center()
             settingsWindow = window
         }
+        launchAtLogin.refresh()
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -1069,8 +1113,8 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
     }
 
     @objc private func showAbout() {
-        let version = appVersion
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
+        let version = AppVersion.short
+        let build = AppVersion.build
 
         let alert = NSAlert()
         alert.messageText = "MacTR"
@@ -1103,10 +1147,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
         NSApp.terminate(nil)
     }
 
-    private var appVersion: String {
-        Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.1"
-    }
+    private var appVersion: String { AppVersion.short }
 }
 
 // MARK: - CLI Mode
@@ -1119,6 +1160,9 @@ private func runBenchmark() {
     let args = CommandLine.arguments
     let frames = parseFlag(args, flag: "--benchmark") ?? 120
     let brightness = parseFlag(args, flag: "-b") ?? 5
+    // Matches the "Rotate 180°" setting: set for panels mounted the other way
+    // up. It XORs with the panel's own `needsRotation` exactly as the GUI
+    // engine does in AppState, so both paths land the same way up.
     let rotate = args.contains("--rotate")
 
     print("[Bench] Frame-rate benchmark — \(frames) frames")
@@ -1129,8 +1173,10 @@ private func runBenchmark() {
     }
     defer { device.close() }
 
-    do { _ = try LYProtocol.handshake(device: device) }
+    let info: DeviceInfo
+    do { info = try LYProtocol.handshake(device: device) }
     catch { print("[Bench][ERROR] handshake failed: \(error)"); return }
+    let rotate180 = info.needsRotation != rotate
 
     let renderer = MonitorRenderer()
     renderer.startMetrics()
@@ -1141,7 +1187,7 @@ private func runBenchmark() {
     // Warm up: first render + JPEG/rotation contexts allocate; discard 5 frames
     for _ in 0..<5 {
         if let img = renderer.render(),
-           let j = JPEGEncoder.encode(img, brightness: brightness, rotate: rotate) {
+           let j = JPEGEncoder.encode(img, brightness: brightness, rotate180: rotate180) {
             try? LYProtocol.sendFrame(device: device, jpegData: j)
         }
     }
@@ -1155,7 +1201,7 @@ private func runBenchmark() {
         let r0 = now()
         guard let image = renderer.render() else { continue }
         let r1 = now()
-        guard let jpeg = JPEGEncoder.encode(image, brightness: brightness, rotate: rotate) else { continue }
+        guard let jpeg = JPEGEncoder.encode(image, brightness: brightness, rotate180: rotate180) else { continue }
         let r2 = now()
         do { try LYProtocol.sendFrame(device: device, jpegData: jpeg) }
         catch { print("[Bench][ERROR] send failed at frame \(sent): \(error)"); break }
@@ -1261,8 +1307,10 @@ private func runDemo() {
         return
     }
     defer { device.close() }
-    do { _ = try LYProtocol.handshake(device: device) }
+    let info: DeviceInfo
+    do { info = try LYProtocol.handshake(device: device) }
     catch { print("[Demo][ERROR] handshake failed: \(error)"); return }
+    let rotate180 = info.needsRotation != rotate
 
     let renderer = MonitorRenderer()
     renderer.demoMode = true
@@ -1271,7 +1319,7 @@ private func runDemo() {
     while true {
         autoreleasepool {
             if let image = renderer.render(),
-               let jpeg = JPEGEncoder.encode(image, brightness: brightness, rotate: rotate) {
+               let jpeg = JPEGEncoder.encode(image, brightness: brightness, rotate180: rotate180) {
                 try? LYProtocol.sendFrame(device: device, jpegData: jpeg)
             }
         }
@@ -1283,6 +1331,9 @@ private func runCLI() {
     let args = CommandLine.arguments
     let isTest = args.contains("--test")
     let brightness = parseFlag(args, flag: "-b") ?? 5
+    // Matches the "Rotate 180°" setting: set for panels mounted the other way
+    // up. It XORs with the panel's own `needsRotation` exactly as the GUI
+    // engine does in AppState, so both paths land the same way up.
     let rotate = args.contains("--rotate")
 
     log("[*] MacTR CLI — \(isTest ? "USB Test" : "System Monitor")")
@@ -1309,7 +1360,10 @@ private func runCLI() {
     }
 
     if isTest {
-        guard let jpeg = makeTestJPEG(width: info.width, height: info.height) else {
+        guard let jpeg = makeTestJPEG(
+            width: info.width, height: info.height,
+            brightness: brightness, rotate180: info.needsRotation != rotate)
+        else {
             log("[ERROR] Failed to create test image")
             return
         }
@@ -1326,7 +1380,9 @@ private func runCLI() {
         var count = 0
         while true {
             guard let image = renderer.render(),
-                  let jpeg = JPEGEncoder.encode(image, brightness: brightness, rotate: rotate)
+                  let jpeg = JPEGEncoder.encode(
+                      image, brightness: brightness,
+                      rotate180: info.needsRotation != rotate)
             else {
                 Thread.sleep(forTimeInterval: 1)
                 continue
@@ -1383,7 +1439,8 @@ private func parseLanguage(_ args: [String]) -> AppLanguage {
 
 // MARK: - Test Image
 
-func makeTestJPEG(width: Int, height: Int) -> Data? {
+func makeTestJPEG(width: Int, height: Int,
+                  brightness: Int = 1, rotate180: Bool = true) -> Data? {
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     guard let ctx = CGContext(
         data: nil, width: width, height: height,
@@ -1430,5 +1487,5 @@ func makeTestJPEG(width: Int, height: Int) -> Data? {
     ctx.restoreGState()
 
     guard let image = ctx.makeImage() else { return nil }
-    return JPEGEncoder.encode(image)
+    return JPEGEncoder.encode(image, brightness: brightness, rotate180: rotate180)
 }

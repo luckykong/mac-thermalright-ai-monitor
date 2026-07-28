@@ -13,6 +13,30 @@ import Foundation
 
 // MARK: - Data Structures
 
+/// One rate-limit window: how much of it is spent and when it rolls over.
+/// Codex reports a single window; Claude has both a 5-hour and a 7-day one.
+struct QuotaWindow: Sendable, Equatable {
+    /// Short, language-neutral name rendered beside the percentage ("5h", "7d").
+    let label: String
+    let usedPercent: Double
+    let resetsAt: Date?
+
+    /// A window whose reset time has already passed is provably stale — the
+    /// real utilisation rolled over to near zero — so it is dropped rather
+    /// than shown as a confident number.
+    var isExpired: Bool {
+        guard let resetsAt else { return false }
+        return resetsAt < Date()
+    }
+
+    /// "5h" / "7d" from a window length in minutes.
+    static func label(minutes: Int) -> String {
+        if minutes >= 1440, minutes % 1440 == 0 { return "\(minutes / 1440)d" }
+        if minutes >= 60, minutes % 60 == 0 { return "\(minutes / 60)h" }
+        return "\(minutes)m"
+    }
+}
+
 struct AgentUsage: Sendable {
     let available: Bool             // data directory exists at all
     let todayInputTokens: UInt64    // includes cache read/write tokens
@@ -20,8 +44,8 @@ struct AgentUsage: Sendable {
     let secondsSinceActive: Int?    // nil = no session today
     let project: String?            // cwd basename of most recent session
     let activity: String?           // latest tool call / message summary
-    let quotaUsedPercent: Double?   // rate-limit window usage (Codex only for now)
-    let quotaResetsAt: Date?
+    /// Rate-limit windows, newest reading first. Empty when unavailable.
+    let quotaWindows: [QuotaWindow]
     let needsAttention: Bool        // turn finished / waiting for user — flash the column
     let isWorking: Bool             // actively running a turn — slow breathing background
     let stepCurrent: Int?           // active plan step (1-based); nil = no plan
@@ -31,7 +55,7 @@ struct AgentUsage: Sendable {
 
     init(available: Bool, todayInputTokens: UInt64, todayOutputTokens: UInt64,
          secondsSinceActive: Int?, project: String?, activity: String?,
-         quotaUsedPercent: Double? = nil, quotaResetsAt: Date? = nil,
+         quotaWindows: [QuotaWindow] = [],
          needsAttention: Bool = false, isWorking: Bool = false,
          stepCurrent: Int? = nil, stepTotal: Int? = nil, stepText: String? = nil) {
         self.available = available
@@ -40,8 +64,7 @@ struct AgentUsage: Sendable {
         self.secondsSinceActive = secondsSinceActive
         self.project = project
         self.activity = activity
-        self.quotaUsedPercent = quotaUsedPercent
-        self.quotaResetsAt = quotaResetsAt
+        self.quotaWindows = quotaWindows.filter { !$0.isExpired }
         self.needsAttention = needsAttention
         self.isWorking = isWorking
         self.stepCurrent = stepCurrent
@@ -61,12 +84,28 @@ final class AgentUsageCollector: @unchecked Sendable {
 
     private let fm = FileManager.default
     private let home = FileManager.default.homeDirectoryForCurrentUser.path
+    private let claudeQuota = ClaudeUsageFetcher()
 
     // Incremental state, reset on day rollover
     private var dayKey = ""
     private var todayStartISO = ""      // lexical threshold for ISO8601 "Z" timestamps
     private var claudeOffsets: [String: UInt64] = [:]
+    /// Reset at midnight. Capped as a safety net only: an always-on process
+    /// should not hold a set that grows without any ceiling, even though
+    /// reaching this one would take a six-figure message count in a single day.
+    private static let maxSeenIDs = 200_000
     private var claudeSeenIDs: Set<String> = []
+    private var claudeSeenIDsOverflowed = false
+    /// Ceiling on how many of today's session files are read per cycle. There is
+    /// no bound on how many project directories `~/.claude/projects` accumulates,
+    /// and this runs every few seconds for as long as the app is up.
+    ///
+    /// Deliberately not a directory-mtime prefilter: appending to a JSONL does
+    /// not touch its parent directory's mtime, so that test would skip exactly
+    /// the projects being written to right now.
+    private static let maxScannedFiles = 200
+    private var claudeScanOverflowed = false
+    private var codexScanOverflowed = false
     private var claudeInput: UInt64 = 0
     private var claudeOutput: UInt64 = 0
     private var codexOffsets: [String: UInt64] = [:]
@@ -84,7 +123,7 @@ final class AgentUsageCollector: @unchecked Sendable {
     // Last-known Codex quota (account-global). The full rate-limit block appears only
     // occasionally and the newest reading may be in a different file than the active
     // one, so we track the newest-by-timestamp across recent files and cache it.
-    private var codexQuotaCache: (used: Double, resets: Date?)?
+    private var codexQuotaCache: QuotaWindow?
     private var codexQuotaTS = ""            // newest reading's timestamp seen so far
     private var codexQuotaLastScan: Date?
 
@@ -108,10 +147,90 @@ final class AgentUsageCollector: @unchecked Sendable {
         todayStartISO = iso.string(from: Calendar.current.startOfDay(for: Date()))
 
         claudeOffsets = [:]; claudeSeenIDs = []; claudeInput = 0; claudeOutput = 0
+        claudeSeenIDsOverflowed = false
+        claudeScanOverflowed = false
+        codexScanOverflowed = false
         codexOffsets = [:]; codexInput = 0; codexOutput = 0
     }
 
     // MARK: - Claude
+
+    private struct SessionFile {
+        let path: String
+        let mtime: Date
+        let size: UInt64
+    }
+
+    private struct ScannedSessions {
+        /// Newest first, never longer than the limit passed to `scanSessions`.
+        var files: [SessionFile] = []
+        /// Newest session of any day — drives the activity/project display, so
+        /// the column isn't blank on a day with no runs yet.
+        var latestPath: String?
+        var latestMtime = Date.distantPast
+        /// More of today's files existed than the limit allowed.
+        var overflowed = false
+    }
+
+    /// One pass over `dirs`, keeping only the newest `limit` files modified
+    /// since `todayStart`.
+    ///
+    /// Attributes come from the directory enumeration's prefetch rather than a
+    /// separate `attributesOfItem` per file, and the result array is capped as
+    /// it is built instead of being collected in full and trimmed afterwards.
+    /// Both matter only for a home directory with a very large number of
+    /// sessions, which is exactly the case that had no ceiling at all.
+    private func scanSessions(
+        dirs: [String], todayStart: Date, limit: Int
+    ) -> ScannedSessions {
+        var result = ScannedSessions()
+        result.files.reserveCapacity(min(limit, 64))
+        var todayCount = 0
+
+        for dir in dirs {
+            let contents = try? fm.contentsOfDirectory(
+                at: URL(fileURLWithPath: dir),
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                options: [.skipsHiddenFiles])
+            for url in contents ?? [] {
+                guard url.pathExtension == "jsonl" else { continue }
+                guard let values = try? url.resourceValues(
+                        forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                      let mtime = values.contentModificationDate
+                else { continue }
+
+                if mtime > result.latestMtime {
+                    result.latestMtime = mtime
+                    result.latestPath = url.path
+                }
+
+                guard mtime >= todayStart else { continue }
+                todayCount += 1
+                let entry = SessionFile(
+                    path: url.path, mtime: mtime,
+                    size: UInt64(values.fileSize ?? 0))
+
+                if result.files.count < limit {
+                    result.files.append(entry)
+                    if result.files.count == limit {
+                        result.files.sort { $0.mtime > $1.mtime }
+                    }
+                } else if let oldest = result.files.last, entry.mtime > oldest.mtime {
+                    // Sorted newest-first from here on, so the tail is the one
+                    // to drop and the newcomer bubbles up to its place.
+                    result.files[result.files.count - 1] = entry
+                    var i = result.files.count - 1
+                    while i > 0, result.files[i].mtime > result.files[i - 1].mtime {
+                        result.files.swapAt(i, i - 1)
+                        i -= 1
+                    }
+                }
+            }
+        }
+        if result.files.count < limit { result.files.sort { $0.mtime > $1.mtime } }
+        result.overflowed = todayCount > limit
+        return result
+    }
 
     private func collectClaude() -> AgentUsage {
         let root = home + "/.claude/projects"
@@ -121,28 +240,22 @@ final class AgentUsageCollector: @unchecked Sendable {
         }
 
         let todayStart = Calendar.current.startOfDay(for: Date())
-        var latestPath: String?
-        var latestMtime = Date.distantPast
+        let projectDirs = ((try? fm.contentsOfDirectory(atPath: root)) ?? [])
+            .map { root + "/" + $0 }
+        let scan = scanSessions(
+            dirs: projectDirs, todayStart: todayStart, limit: Self.maxScannedFiles)
+        let latestPath = scan.latestPath
+        let latestMtime = scan.latestMtime
 
-        for projDir in (try? fm.contentsOfDirectory(atPath: root)) ?? [] {
-            let dirPath = root + "/" + projDir
-            for file in (try? fm.contentsOfDirectory(atPath: dirPath)) ?? [] {
-                guard file.hasSuffix(".jsonl") else { continue }
-                let path = dirPath + "/" + file
-                guard let attrs = try? fm.attributesOfItem(atPath: path),
-                      let mtime = attrs[.modificationDate] as? Date
-                else { continue }
-                // Latest session overall (any day) — drives the activity/project
-                // display so the column isn't blank on a day with no runs yet
-                if mtime > latestMtime { latestMtime = mtime; latestPath = path }
-
-                // Token counting is scoped to today only
-                guard mtime >= todayStart else { continue }
-                let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
-                consumeNewLines(path: path, size: size, offsets: &claudeOffsets,
-                                prefilter: "\"type\":\"assistant\"") { line in
-                    self.accumulateClaudeLine(line)
-                }
+        if scan.overflowed, !claudeScanOverflowed {
+            claudeScanOverflowed = true
+            log("[Agents] More than \(Self.maxScannedFiles) Claude session files"
+                + " modified today; reading only the most recent ones.")
+        }
+        for entry in scan.files {
+            consumeNewLines(path: entry.path, size: entry.size, offsets: &claudeOffsets,
+                            prefilter: "\"type\":\"assistant\"") { line in
+                self.accumulateClaudeLine(line)
             }
         }
 
@@ -175,6 +288,7 @@ final class AgentUsageCollector: @unchecked Sendable {
                           todayOutputTokens: claudeOutput,
                           secondsSinceActive: secondsAgo,
                           project: project, activity: activity,
+                          quotaWindows: claudeQuota.windows(),
                           needsAttention: attention, isWorking: working,
                           stepCurrent: step?.current, stepTotal: step?.total,
                           stepText: step?.text)
@@ -189,7 +303,15 @@ final class AgentUsageCollector: @unchecked Sendable {
         else { return }
         // Dedupe: continued/forked sessions copy earlier entries into new files
         if let id = msg["id"] as? String {
-            guard claudeSeenIDs.insert(id).inserted else { return }
+            if claudeSeenIDs.count >= Self.maxSeenIDs {
+                if !claudeSeenIDsOverflowed {
+                    claudeSeenIDsOverflowed = true
+                    log("[Agents] Claude dedupe set reached \(Self.maxSeenIDs) ids;"
+                        + " duplicates may be double-counted until midnight.")
+                }
+            } else if !claudeSeenIDs.insert(id).inserted {
+                return
+            }
         }
         claudeInput += uint(usage["input_tokens"])
             + uint(usage["cache_creation_input_tokens"])
@@ -324,26 +446,23 @@ final class AgentUsageCollector: @unchecked Sendable {
             }
         }
 
-        var latestPath: String?
-        var latestMtime = Date.distantPast
+        // Bounded the same way as Claude's. The fourteen-day window already caps
+        // how many directories are visited, but not how many sessions a single
+        // day may hold.
+        let scan = scanSessions(
+            dirs: dirs, todayStart: todayStart, limit: Self.maxScannedFiles)
+        let latestPath = scan.latestPath
+        let latestMtime = scan.latestMtime
 
-        for dir in dirs {
-            for file in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] {
-                guard file.hasSuffix(".jsonl") else { continue }
-                let path = dir + "/" + file
-                guard let attrs = try? fm.attributesOfItem(atPath: path),
-                      let mtime = attrs[.modificationDate] as? Date
-                else { continue }
-                // Latest session overall — drives activity/quota display
-                if mtime > latestMtime { latestMtime = mtime; latestPath = path }
-
-                // Token counting is scoped to today only
-                guard mtime >= todayStart else { continue }
-                let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
-                consumeNewLines(path: path, size: size, offsets: &codexOffsets,
-                                prefilter: "\"token_count\"") { line in
-                    self.accumulateCodexLine(line)
-                }
+        if scan.overflowed, !codexScanOverflowed {
+            codexScanOverflowed = true
+            log("[Agents] More than \(Self.maxScannedFiles) Codex session files"
+                + " modified today; reading only the most recent ones.")
+        }
+        for entry in scan.files {
+            consumeNewLines(path: entry.path, size: entry.size, offsets: &codexOffsets,
+                            prefilter: "\"token_count\"") { line in
+                self.accumulateCodexLine(line)
             }
         }
 
@@ -355,8 +474,7 @@ final class AgentUsageCollector: @unchecked Sendable {
         var project: String?
         var activity: String?
         var secondsAgo: Int?
-        let quotaUsed = codexQuotaCache?.used
-        let quotaResets = codexQuotaCache?.resets
+        let quotaWindows = codexQuotaCache.map { [$0] } ?? []
         var attention = false
         var working = false
         var step: (current: Int, total: Int, text: String)?
@@ -380,7 +498,7 @@ final class AgentUsageCollector: @unchecked Sendable {
                           todayOutputTokens: codexOutput,
                           secondsSinceActive: secondsAgo,
                           project: project, activity: activity,
-                          quotaUsedPercent: quotaUsed, quotaResetsAt: quotaResets,
+                          quotaWindows: quotaWindows,
                           needsAttention: attention, isWorking: working,
                           stepCurrent: step?.current, stepTotal: step?.total,
                           stepText: step?.text)
@@ -493,7 +611,11 @@ final class AgentUsageCollector: @unchecked Sendable {
                     if let r = (primary["resets_at"] as? NSNumber)?.doubleValue {
                         resets = Date(timeIntervalSince1970: r)
                     }
-                    codexQuotaCache = (used, resets)
+                    let minutes = (primary["window_minutes"] as? NSNumber)?.intValue
+                    codexQuotaCache = QuotaWindow(
+                        label: minutes.map(QuotaWindow.label(minutes:)) ?? "",
+                        usedPercent: used,
+                        resetsAt: resets)
                 }
             }
         }

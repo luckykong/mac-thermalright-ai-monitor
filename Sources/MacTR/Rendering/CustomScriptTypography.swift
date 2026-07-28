@@ -20,7 +20,44 @@ enum CustomScriptTypography {
         let truncated: Bool
     }
 
+    private struct LayoutKey: Hashable {
+        let output: String
+        let mode: CustomScriptFontMode
+        let maxWidth: CGFloat
+        let availableHeight: Int
+    }
+
+    /// This is the renderer's most expensive call by a wide margin: it walks up
+    /// to fourteen candidate font sizes and, for each, measures once per
+    /// character of the output. It is also the most repetitive — the card's text
+    /// comes from a script that runs on an interval measured in minutes, while
+    /// this ran on every frame.
+    ///
+    /// Small on purpose. The key includes the output text, so a card whose
+    /// script emits a clock would otherwise grow an entry per tick; a handful of
+    /// entries covers the real cases (current text, plus the card geometry
+    /// changing when the layout does).
+    private static let layouts = MemoCache<LayoutKey, CustomScriptTextLayout>(
+        capacity: 32)
+
     static func layout(
+        output: String,
+        mode: CustomScriptFontMode,
+        maxWidth: CGFloat,
+        availableHeight: Int
+    ) -> CustomScriptTextLayout {
+        layouts.value(
+            for: LayoutKey(
+                output: output, mode: mode,
+                maxWidth: maxWidth, availableHeight: availableHeight)
+        ) {
+            computeLayout(
+                output: output, mode: mode,
+                maxWidth: maxWidth, availableHeight: availableHeight)
+        }
+    }
+
+    private static func computeLayout(
         output: String,
         mode: CustomScriptFontMode,
         maxWidth: CGFloat,
@@ -197,7 +234,9 @@ enum CustomScriptTypography {
         return "…"
     }
 
+    /// Still measured per character, but each distinct prefix is now measured
+    /// once for the lifetime of the process rather than once per frame.
     private static func width(of value: String, font: NSFont) -> CGFloat {
-        (value as NSString).size(withAttributes: [.font: font]).width
+        TextMetrics.width(of: value, font: font)
     }
 }

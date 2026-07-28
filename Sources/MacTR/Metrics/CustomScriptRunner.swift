@@ -332,13 +332,24 @@ final class CustomScriptRunner: @unchecked Sendable {
         environment["MACTR_RUN_AT"] = ISO8601DateFormatter().string(from: Date())
         process.environment = environment
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        let accumulator = ScriptOutputAccumulator(limit: 8 * 1024)
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            if accumulator.append(data) {
+        // stdout and stderr get their own pipes. Sharing one spliced any
+        // diagnostic a script wrote to stderr — a Python warning, a conda
+        // banner, an exception string carrying an API key — straight into the
+        // card text rendered on the physical display.
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+
+        let stdoutAccumulator = ScriptOutputAccumulator(limit: 8 * 1024)
+        let stderrAccumulator = ScriptOutputAccumulator(limit: 4 * 1024)
+        outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            if stdoutAccumulator.append(handle.availableData) {
+                self?.terminateCurrentProcess()
+            }
+        }
+        errPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            if stderrAccumulator.append(handle.availableData) {
                 self?.terminateCurrentProcess()
             }
         }
@@ -353,7 +364,8 @@ final class CustomScriptRunner: @unchecked Sendable {
         do {
             try process.run()
         } catch {
-            pipe.fileHandleForReading.readabilityHandler = nil
+            outPipe.fileHandleForReading.readabilityHandler = nil
+            errPipe.fileHandleForReading.readabilityHandler = nil
             clearCurrentProcess(process)
             publishFailure(
                 state: .failed,
@@ -376,10 +388,16 @@ final class CustomScriptRunner: @unchecked Sendable {
             }
         }
 
-        pipe.fileHandleForReading.readabilityHandler = nil
-        accumulator.append(pipe.fileHandleForReading.readDataToEndOfFile())
+        outPipe.fileHandleForReading.readabilityHandler = nil
+        errPipe.fileHandleForReading.readabilityHandler = nil
+        stdoutAccumulator.append(outPipe.fileHandleForReading.readDataToEndOfFile())
+        stderrAccumulator.append(errPipe.fileHandleForReading.readDataToEndOfFile())
         clearCurrentProcess(process)
-        let output = accumulator.string()
+        let output = stdoutAccumulator.string()
+        let diagnostics = stderrAccumulator.string()
+        if !diagnostics.isEmpty {
+            log("[Script] \(configuration.resolvedDisplayName) stderr: \(diagnostics)")
+        }
 
         if timedOut {
             publishFailure(
@@ -397,9 +415,15 @@ final class CustomScriptRunner: @unchecked Sendable {
                 lastRunAt: startedAt,
                 exitCode: 0))
         } else {
-            let detail = output.isEmpty
-                ? "Exited with status \(process.terminationStatus)."
-                : output
+            // stderr is where a failing script explains itself; stdout is only
+            // a fallback for scripts that report errors on the card stream.
+            let detail = if !diagnostics.isEmpty {
+                diagnostics
+            } else if !output.isEmpty {
+                output
+            } else {
+                "Exited with status \(process.terminationStatus)."
+            }
             publishFailure(
                 state: .failed,
                 message: detail,

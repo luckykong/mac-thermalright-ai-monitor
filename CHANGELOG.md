@@ -2,10 +2,21 @@
 
 All notable changes to MacTR are documented here.
 
-## [Unreleased]
+## [1.4.2] - 2026-07-28
 
 ### Added
 
+- Added Claude rate-limit windows to the AI Agents panel. The quota bar was never
+  Codex-specific in the renderer, but Claude Code persists no rate-limit data on disk,
+  so nothing supplied it. MacTR now makes one authenticated request to Anthropic's
+  OAuth usage endpoint and shows the 5-hour and 7-day windows side by side. The token
+  is read from Claude Code's own keychain item and **never refreshed** — the refresh
+  token there is shared with Claude Code and rotating it would sign it out. This is the
+  only network request MacTR makes; see the README for how to opt out.
+- Enlarged both mascots. Pikachu goes from 49 to 66 pt and Bongo Cat from 0.54 to 0.78
+  scale, and image drawing now requests high interpolation quality. At the old size the
+  170 px Pikachu sprite lost its red cheeks and black outlines to downscaling and read
+  as a pale yellow blob.
 - Added a persistent runtime language picker for Simplified Chinese and English.
   Simplified Chinese is the first-run default, and both Settings and the menu bar
   can switch the entire app and LCD dashboard without restarting.
@@ -24,6 +35,68 @@ All notable changes to MacTR are documented here.
 - Removed all prebuilt DMG, ZIP, and checksum attachments from public Releases.
   Releases are source-only; the README now documents the complete local standalone
   packaging and verification workflow.
+
+### Fixed
+
+- Fixed the brightness pass draining colour from the LCD. It scaled each channel
+  independently and clipped at 255, so any channel already above 255/factor stopped at
+  the ceiling while the darker channels kept climbing — every vivid colour slid toward
+  white. At the default factor of 2.2 the accent red (239,68,68) rendered as a washed
+  (255,152,128) and Bongo Cat's pink paws became pure white. Gain is now capped per
+  pixel so the brightest channel lands exactly on 255, preserving the ratios between
+  channels and therefore hue and saturation; dark pixels still get the full factor. The
+  preview window never ran this pass, which is why only the panel looked faded.
+- Fixed the quota reset countdown mixing languages: the split two-window layout fell
+  back to a bare "3h"/"4d" while Codex showed "5 天后重置" in the same panel.
+- Fixed reconnect building an unbounded call stack. `connectAndRun` and
+  `runFrameLoop` called each other, so every reconnect cycle pushed two stack
+  frames that never unwound; reconnection is now a loop with 5–60 s exponential
+  backoff.
+- Fixed a data race on the engine's `enabled`/`running` flags, which were plain
+  `Bool`s written from the main thread, the USB queue and the IOKit hotplug
+  queue. They are atomic now, and the remaining unsynchronised hotplug work
+  moved onto the USB queue.
+- Fixed a device conflict being reported as `Failed to set configuration
+  (code -4)`. On macOS an exclusive-access conflict surfaces at
+  `libusb_set_configuration`, not at `libusb_claim_interface`, so the friendly
+  "device in use by another application" message was unreachable.
+- Fixed `USBHotplug` leaking IOKit notification iterators: both product IDs
+  shared one pair of variables, so every registration but the last leaked and
+  could not be deregistered.
+- Fixed the frame sender advancing its cursor by a fixed 4096 bytes rather than
+  the number of bytes actually written, and enforced the previously unused
+  650 KB frame limit.
+- Fixed `JPEGEncoder`'s `rotate` parameter, whose name, default value and
+  documentation all contradicted its `if !rotate { …rotate… }` implementation.
+  It is now `rotate180`, and the handshake's `needsRotation` — parsed since
+  1.0 but never read — is finally used.
+- Made `--cli`, `--demo`, `--benchmark` and the `--cli --test` pattern honour the
+  panel's own `needsRotation` instead of assuming every panel needs rotating.
+  All of them already performed the handshake and discarded the result, so only
+  the menu-bar engine read it. Every profile currently reports `true`, which is
+  what the hardcoded behaviour assumed, so this changes nothing on today's
+  panels — it removes a divergence that would appear the moment one reports
+  `false`. The test pattern also ignored `-b`, and no longer does.
+- Bounded the Claude agent scan, which read every session file modified today
+  with no upper limit, and moved the quota fetcher's result behind a lock. The
+  result was a plain `var` written from the URLSession callback; the semaphore
+  already ordered that write before the read, but not in a way the compiler
+  could see, so it emitted six concurrency warnings.
+- Fixed custom-card output being contaminated by the script's stderr. The two
+  streams shared one pipe, so warnings and exception text (potentially
+  including credentials) were rendered on the LCD.
+- Fixed the app querying `SMAppService` once per second from a menu-refresh
+  timer, even with the menu closed.
+- Fixed application logs being unretrievable: they were emitted at `.info`,
+  which is not persisted, and `--cli` produced no terminal output at all.
+- Fixed `swift test` being unrunnable without a full Xcode install; use
+  `./scripts/test.sh`.
+- Fixed the version number being duplicated across six locations that had
+  drifted apart. `Info.plist` is now the only source.
+- Fixed the dot-weather example hardcoding the author's personal paths,
+  requiring a separate unpublished project even for `--sample`, falling back to
+  an unboundedly stale cache, leaving requests without a timeout, and printing
+  API keys into failure messages.
 
 ## [1.4.1] - 2026-07-27
 

@@ -20,15 +20,14 @@ final class USBHotplug: @unchecked Sendable {
     var onDisconnect: (() -> Void)?
 
     private var notifyPort: IONotificationPortRef?
-    private var addedIterator: io_iterator_t = 0
-    private var removedIterator: io_iterator_t = 0
+    /// One iterator per (product, notification-type) registration. Each one has
+    /// to stay retained for its notification to keep firing, so they are all
+    /// kept here and released together in `stop()`. Reusing a single variable
+    /// across products — as this used to do — leaks every registration but the
+    /// last, and "fixing" that by releasing the previous value instead would
+    /// silently disable hotplug detection for the first product ID.
+    private var notificationIterators: [io_iterator_t] = []
     private let queue = DispatchQueue(label: "com.thermalvision.hotplug")
-
-    // VID/PID pairs to watch
-    private let devices: [(UInt16, UInt16)] = [
-        (0x0416, 0x5408),  // LY
-        (0x0416, 0x5409),  // LY1
-    ]
 
     func start() {
         notifyPort = IONotificationPortCreate(kIOMainPortDefault)
@@ -36,60 +35,58 @@ final class USBHotplug: @unchecked Sendable {
 
         IONotificationPortSetDispatchQueue(notifyPort, queue)
 
-        for (vid, pid) in devices {
-            let matching = createMatchingDict(vid: vid, pid: pid)
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        let registrations: [(notificationType: String, callback: IOServiceMatchingCallback)] = [
+            (kIOFirstMatchNotification, deviceAdded),
+            (kIOTerminatedNotification, deviceRemoved),
+        ]
 
-            // Watch for device added
-            if let matchCopy = matching.map({ NSDictionary(dictionary: $0 as NSDictionary) as CFDictionary }) {
-                let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-                IOServiceAddMatchingNotification(
-                    notifyPort,
-                    kIOFirstMatchNotification,
-                    matchCopy,
-                    deviceAdded,
-                    selfPtr,
-                    &addedIterator)
-                // Drain existing matches
-                drainIterator(addedIterator)
-            }
+        for pid in USBDeviceIdentity.productIDs {
+            for registration in registrations {
+                // IOServiceAddMatchingNotification consumes a reference to the
+                // matching dictionary, so build a fresh one per registration.
+                guard let matching = Self.createMatchingDict(
+                    vid: USBDeviceIdentity.vendorID, pid: pid)
+                else { continue }
 
-            // Watch for device removed
-            if let matchCopy = matching.map({ NSDictionary(dictionary: $0 as NSDictionary) as CFDictionary }) {
-                let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-                IOServiceAddMatchingNotification(
+                var iterator: io_iterator_t = 0
+                let result = IOServiceAddMatchingNotification(
                     notifyPort,
-                    kIOTerminatedNotification,
-                    matchCopy,
-                    deviceRemoved,
+                    registration.notificationType,
+                    matching,
+                    registration.callback,
                     selfPtr,
-                    &removedIterator)
-                // Drain existing matches
-                drainIterator(removedIterator)
+                    &iterator)
+                guard result == KERN_SUCCESS, iterator != 0 else { continue }
+
+                notificationIterators.append(iterator)
+                // Arming the notification requires draining the initial matches.
+                drainIterator(iterator)
             }
         }
 
-        print("[Hotplug] Watching for device connect/disconnect")
+        log("[Hotplug] Watching for device connect/disconnect")
     }
 
     func stop() {
-        if addedIterator != 0 {
-            IOObjectRelease(addedIterator)
-            addedIterator = 0
+        for iterator in notificationIterators {
+            IOObjectRelease(iterator)
         }
-        if removedIterator != 0 {
-            IOObjectRelease(removedIterator)
-            removedIterator = 0
-        }
+        notificationIterators.removeAll()
         if let notifyPort {
             IONotificationPortDestroy(notifyPort)
         }
         notifyPort = nil
     }
 
-    /// Check if device is currently present (one-shot check)
-    func isDevicePresent() -> Bool {
-        for (vid, pid) in devices {
-            guard let matching = createMatchingDict(vid: vid, pid: pid) else { continue }
+    /// Whether the LCD is currently enumerated by IOKit (one-shot check).
+    /// Static so `USBDevice` can tell "somebody else owns it" apart from
+    /// "it was unplugged" without owning a hotplug watcher.
+    static func isDevicePresent() -> Bool {
+        for pid in USBDeviceIdentity.productIDs {
+            guard let matching = createMatchingDict(
+                vid: USBDeviceIdentity.vendorID, pid: pid)
+            else { continue }
             var iterator: io_iterator_t = 0
             let result = IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator)
             if result == KERN_SUCCESS {
@@ -110,7 +107,7 @@ final class USBHotplug: @unchecked Sendable {
 
     // MARK: - Private
 
-    private func createMatchingDict(vid: UInt16, pid: UInt16) -> CFMutableDictionary? {
+    private static func createMatchingDict(vid: UInt16, pid: UInt16) -> CFMutableDictionary? {
         guard let dict = IOServiceMatching(kIOUSBDeviceClassName) else { return nil }
         let mutableDict = dict as NSMutableDictionary
         mutableDict[kUSBVendorID] = vid
@@ -133,7 +130,7 @@ private func deviceAdded(refcon: UnsafeMutableRawPointer?, iterator: io_iterator
     while case let service = IOIteratorNext(iterator), service != 0 {
         IOObjectRelease(service)
     }
-    print("[Hotplug] Device connected")
+    log("[Hotplug] Device connected")
     hotplug.onConnect?()
 }
 
@@ -142,6 +139,6 @@ private func deviceRemoved(refcon: UnsafeMutableRawPointer?, iterator: io_iterat
     while case let service = IOIteratorNext(iterator), service != 0 {
         IOObjectRelease(service)
     }
-    print("[Hotplug] Device disconnected")
+    log("[Hotplug] Device disconnected")
     hotplug.onDisconnect?()
 }

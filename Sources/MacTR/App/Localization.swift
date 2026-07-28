@@ -222,6 +222,9 @@ enum L10nKey: CaseIterable, Sendable {
     case tokenInput
     case tokenOutput
     case quotaRemaining
+    /// Shorter form used when a column shows more than one rate-limit window
+    /// and each only gets half the width.
+    case quotaRemainingCompact
     case resetDays
     case resetHours
     case resetMinutes
@@ -461,6 +464,7 @@ enum AppLocalization {
         .tokenInput: Pair(zhHans: "输入", english: "In"),
         .tokenOutput: Pair(zhHans: "输出", english: "Out"),
         .quotaRemaining: Pair(zhHans: "剩余额度 %.0f%%", english: "%.0f%% quota left"),
+        .quotaRemainingCompact: Pair(zhHans: "剩余 %.0f%%", english: "%.0f%% left"),
         .resetDays: Pair(zhHans: "%d 天后重置", english: "resets in %dd"),
         .resetHours: Pair(zhHans: "%d 小时后重置", english: "resets in %dh"),
         .resetMinutes: Pair(zhHans: "%d 分钟后重置", english: "resets in %dm"),

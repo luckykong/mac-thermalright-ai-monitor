@@ -522,13 +522,9 @@ struct SettingsView: View {
         return SwiftUI.Color(nsColor: .secondaryLabelColor)
     }
 
-    private var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.4.1"
-    }
+    private var appVersion: String { AppVersion.short }
 
-    private var appBuild: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "141"
-    }
+    private var appBuild: String { AppVersion.build }
 
     private func openLoginItemsSettings() {
         guard let url = URL(

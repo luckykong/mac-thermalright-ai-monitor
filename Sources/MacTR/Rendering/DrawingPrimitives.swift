@@ -160,12 +160,9 @@ enum Draw {
         _ ctx: CGContext, _ string: String, cx: Int, y: Int,
         font: NSFont, color: CGColor
     ) {
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor(cgColor: color) ?? .white,
-        ]
-        let size = (string as NSString).size(withAttributes: attrs)
-        let x = CGFloat(cx) - size.width / 2
+        // Measured with the font alone: colour does not affect advance widths,
+        // and keying the cache on it would split every entry per colour.
+        let x = CGFloat(cx) - TextMetrics.width(of: string, font: font) / 2
         text(ctx, string, x: Int(x), y: y, font: font, color: color)
     }
 
@@ -263,7 +260,7 @@ enum Draw {
         font: NSFont,
         color: CGColor
     ) {
-        let size = (value as NSString).size(withAttributes: [.font: font])
+        let size = TextMetrics.size(of: value, font: font)
         let rectX = CGFloat(x - 4)
         let rectY = CGFloat(y - 2)
         let rectWidth = ceil(size.width) + 8

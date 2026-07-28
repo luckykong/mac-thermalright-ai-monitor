@@ -129,22 +129,26 @@ enum Fonts {
     private struct FontKey: Hashable {
         let size: CGFloat
         let weight: NSFont.Weight
+        let monospaced: Bool
     }
 
-    nonisolated(unsafe) private static var cache: [FontKey: NSFont] = [:]
+    /// Was an unsynchronised `nonisolated(unsafe) var` dictionary, mutated from
+    /// whichever thread happened to be drawing.
+    private static let cache = MemoCache<FontKey, NSFont>(capacity: 128)
 
     static func system(_ size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
-        let key = FontKey(size: size, weight: weight)
-        if let cached = cache[key] {
-            return cached
+        cache.value(for: FontKey(size: size, weight: weight, monospaced: false)) {
+            NSFont.systemFont(ofSize: size, weight: weight)
         }
-        let font = NSFont.systemFont(ofSize: size, weight: weight)
-        cache[key] = font
-        return font
     }
 
+    /// Cached like `system`. This one is the hot path: the custom card's font
+    /// search builds a font for each of up to fourteen candidate sizes, every
+    /// frame, and used to allocate a fresh one every time.
     static func mono(_ size: CGFloat) -> NSFont {
-        NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        cache.value(for: FontKey(size: size, weight: .regular, monospaced: true)) {
+            NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        }
     }
 }
 

@@ -707,7 +707,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         if let gpuTemp = temp.gpuTemp {
             let value = String(format: "%.0f°C", gpuTemp)
             let font = Fonts.system(11, weight: .semibold)
-            let width = (value as NSString).size(withAttributes: [.font: font]).width
+            let width = TextMetrics.width(of: value, font: font)
             Draw.text(ctx, value, x: Int(CGFloat(x + w - 14) - width), y: y + 108,
                       font: font, color: gpuTemp > 70 ? Color.red : Color.green)
         }
@@ -782,8 +782,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                   font: Fonts.system(18, weight: .bold), color: Color.cyan)
         let rangeLabel = language.text(.thirtySeconds)
         let rangeFont = Fonts.system(10, weight: .semibold)
-        let rangeWidth = (rangeLabel as NSString)
-            .size(withAttributes: [.font: rangeFont]).width
+        let rangeWidth = TextMetrics.width(of: rangeLabel, font: rangeFont)
         Draw.text(
             ctx, rangeLabel, x: Int(CGFloat(x + w - 14) - rangeWidth), y: y + 15,
             font: rangeFont, color: Color.textD)
@@ -803,7 +802,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let rateFont = Fonts.system(14, weight: .semibold)
         Draw.text(ctx, down, x: x + 14, y: y + 43,
                   font: rateFont, color: downColor)
-        let upWidth = (up as NSString).size(withAttributes: [.font: rateFont]).width
+        let upWidth = TextMetrics.width(of: up, font: rateFont)
         Draw.text(ctx, up, x: Int(CGFloat(x + w - 14) - upWidth), y: y + 43,
                   font: rateFont, color: upColor)
 
@@ -876,8 +875,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             stateText = language.text(.scriptStateSetup); stateColor = Color.orange
         }
         let stateFont = Fonts.system(11, weight: .bold)
-        let stateWidth = (stateText as NSString)
-            .size(withAttributes: [.font: stateFont]).width
+        let stateWidth = TextMetrics.width(of: stateText, font: stateFont)
         let dotX = CGFloat(x + w - 18) - stateWidth - 9
         ctx.setFillColor(stateColor)
         ctx.fillEllipse(in: CGRect(x: dotX, y: CGFloat(y + 18), width: 6, height: 6))
@@ -993,9 +991,8 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         let seconds = ":" + secondsFormatter.string(from: now)
         let hmFont = Fonts.mono(43)
         let secondsFont = Fonts.mono(18)
-        let hmWidth = (hm as NSString).size(withAttributes: [.font: hmFont]).width
-        let secondsWidth = (seconds as NSString)
-            .size(withAttributes: [.font: secondsFont]).width
+        let hmWidth = TextMetrics.width(of: hm, font: hmFont)
+        let secondsWidth = TextMetrics.width(of: seconds, font: secondsFont)
         let combinedX = CGFloat(x) + (CGFloat(w) - hmWidth - secondsWidth) / 2
         Draw.text(ctx, hm, x: Int(combinedX), y: y + 42,
                   font: hmFont, color: Color.textW)
@@ -1059,8 +1056,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             // Bongo Cat instead of making the rotor look like part of its head.
             let rotorFootprint: CGFloat = 20
             let rotorTextGap: CGFloat = 7
-            let labelWidth = (fanLabel as NSString)
-                .size(withAttributes: [.font: fanFont]).width
+            let labelWidth = TextMetrics.width(of: fanLabel, font: fanFont)
             let rowWidth = rotorFootprint + rotorTextGap + labelWidth
             let rowX = CGFloat(x) + (CGFloat(w) - rowWidth) / 2
             drawFanRotor(
@@ -1154,7 +1150,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                   font: Fonts.system(10, weight: .semibold), color: Color.textL)
         let valueText = String(format: "%.0f%%", value)
         let font = Fonts.system(10, weight: .semibold)
-        let valueWidth = (valueText as NSString).size(withAttributes: [.font: font]).width
+        let valueWidth = TextMetrics.width(of: valueText, font: font)
         Draw.text(ctx, valueText, x: Int(CGFloat(x + w) - valueWidth), y: y,
                   font: font, color: Color.textS)
         Draw.bar(ctx, x: x, y: y + 16, w: w, h: 6, percent: value, color: color)
@@ -1426,7 +1422,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         }
         let agoFont = Fonts.system(15, weight: .medium)
         let agoColor = active ? Color.green : Color.textD
-        let agoW = (agoStr as NSString).size(withAttributes: [.font: agoFont]).width
+        let agoW = TextMetrics.width(of: agoStr, font: agoFont)
         Draw.text(ctx, agoStr, x: Int(CGFloat(x + w) - agoW), y: py + 56,
                   font: agoFont, color: agoColor)
         let dotR: CGFloat = 5
@@ -1444,7 +1440,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                 let badge = AppLocalization.format(
                     .step, language: language, cur, total)
                 let bFont = Fonts.system(16, weight: .semibold)
-                let bW = (badge as NSString).size(withAttributes: [.font: bFont]).width
+                let bW = TextMetrics.width(of: badge, font: bFont)
                 Draw.text(ctx, badge, x: Int(CGFloat(x + w) - bW), y: y + 4,
                           font: bFont, color: accent)
                 projMaxW = CGFloat(w) - bW - 16
@@ -1487,10 +1483,10 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         for (i, row) in ioRows.enumerated() {
             let ry = tokY + 6 + i * 30
             let valStr = formatTokens(row.1, language: language)
-            let valW = (valStr as NSString).size(withAttributes: [.font: ioFont]).width
+            let valW = TextMetrics.width(of: valStr, font: ioFont)
             Draw.text(ctx, valStr, x: Int(CGFloat(x + w) - valW), y: ry,
                       font: ioFont, color: Color.textS)
-            let labelW = (row.0 as NSString).size(withAttributes: [.font: ioFont]).width
+            let labelW = TextMetrics.width(of: row.0, font: ioFont)
             Draw.text(ctx, row.0, x: Int(CGFloat(x + w) - valW - labelW - 10), y: ry,
                       font: ioFont, color: Color.textL)
         }
@@ -1542,8 +1538,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
             let labelFont = Fonts.system(15, weight: .semibold)
             Draw.text(ctx, window.label, x: textX, y: y + 3,
                       font: labelFont, color: Color.textD)
-            textX += Int((window.label as NSString)
-                .size(withAttributes: [.font: labelFont]).width) + 8
+            textX += Int(TextMetrics.width(of: window.label, font: labelFont)) + 8
         }
 
         Draw.text(
@@ -1572,8 +1567,7 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                     .resetMinutes, language: language, max(secs / 60, 1))
             }
             let resetFont = Fonts.system(15)
-            let resetW = (resetStr as NSString)
-                .size(withAttributes: [.font: resetFont]).width
+            let resetW = TextMetrics.width(of: resetStr, font: resetFont)
             Draw.text(ctx, resetStr, x: Int(CGFloat(x + w) - resetW), y: y + 3,
                       font: resetFont, color: Color.textD)
         }
@@ -1736,12 +1730,11 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
 
     /// Truncate a single line with "…" to fit maxW.
     private func truncate(_ s: String, font: NSFont, maxW: CGFloat) -> String {
-        let attrs: [NSAttributedString.Key: Any] = [.font: font]
-        if (s as NSString).size(withAttributes: attrs).width <= maxW { return s }
+        if TextMetrics.width(of: s, font: font) <= maxW { return s }
         var t = s
         while !t.isEmpty {
             t.removeLast()
-            if ((t + "…") as NSString).size(withAttributes: attrs).width <= maxW {
+            if TextMetrics.width(of: t + "…", font: font) <= maxW {
                 return t + "…"
             }
         }
@@ -1751,12 +1744,11 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
     /// Greedy character wrap (activity text may be CJK — no word boundaries).
     private func wrap(_ s: String, font: NSFont, maxW: CGFloat, maxLines: Int) -> [String] {
         guard maxLines >= 1 else { return [] }
-        let attrs: [NSAttributedString.Key: Any] = [.font: font]
         var lines: [String] = []
         var current = ""
         for ch in s {
             let candidate = current + String(ch)
-            if (candidate as NSString).size(withAttributes: attrs).width > maxW {
+            if TextMetrics.width(of: candidate, font: font) > maxW {
                 // Reached the last allowed line → fold the whole remainder into it
                 if lines.count == maxLines - 1 {
                     let rest = String(s[s.index(s.startIndex, offsetBy: lines.joined().count)...])

@@ -46,7 +46,7 @@ enum JPEGEncoder {
         _ image: CGImage,
         brightness: Int = 1,
         rotate180: Bool = true,
-        maxBytes: Int = 650_000
+        maxBytes: Int = maxJPEGSize
     ) -> Data? {
         encodeLock.lock()
         defer { encodeLock.unlock() }

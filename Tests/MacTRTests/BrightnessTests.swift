@@ -156,7 +156,7 @@ struct BrightnessTests {
         // The same image encodes fine against a realistic budget — proving the
         // nil above comes from the size guard, not from a broken encode path.
         let generous = try #require(JPEGEncoder.encode(
-            source, brightness: 1, rotate180: false, maxBytes: 650_000))
-        #expect(generous.count <= 650_000)
+            source, brightness: 1, rotate180: false, maxBytes: maxJPEGSize))
+        #expect(generous.count <= maxJPEGSize)
     }
 }

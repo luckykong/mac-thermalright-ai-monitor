@@ -33,7 +33,12 @@ private let chunkSize = 512
 private let chunkHeaderSize = 16
 private let chunkDataSize = 496  // 512 - 16
 private let usbWriteSize = 4096
-private let maxJPEGSize = 650_000
+
+/// The wire limit for one frame, and the only copy of it. `JPEGEncoder` reads
+/// this for its own default budget: the two used to be independent `650_000`
+/// literals in different files, so raising one without the other would have
+/// left the encoder happily producing frames the protocol then rejected.
+let maxJPEGSize = 650_000
 
 // PM → FBL overrides
 private let pmToFBL: [Int: Int] = [

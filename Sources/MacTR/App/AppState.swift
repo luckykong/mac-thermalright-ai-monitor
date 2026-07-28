@@ -435,11 +435,20 @@ final class DisplayEngine: @unchecked Sendable {
 
         var backoff: TimeInterval = 5
         while enabled {
-            guard let connection = establishConnection() else { return }
-
-            backoff = 5
-            // Returns only once the link drops or the engine is stopped.
-            runFrameLoop(device: connection.device, info: connection.info)
+            switch establishConnection() {
+            case .connected(let device, let info):
+                backoff = 5
+                // Returns only once the link drops or the engine is stopped.
+                runFrameLoop(device: device, info: info)
+            case .busy:
+                // Fall through to the backoff below and try again. Quitting the
+                // app that holds the panel used to leave MacTR disconnected
+                // until the user toggled it or replugged, because nothing in
+                // the system announces a released USB interface.
+                break
+            case .unavailable:
+                return
+            }
 
             guard enabled else { return }
             log("[Engine] Will retry connection in \(Int(backoff))s...")
@@ -453,7 +462,19 @@ final class DisplayEngine: @unchecked Sendable {
     /// Returns nil when there is nothing worth retrying against right now — no
     /// device, or another process owns it. Hotplug and wake notifications call
     /// back in when that changes, so spinning here would only burn power.
-    private func establishConnection() -> (device: USBDevice, info: DeviceInfo)? {
+    private enum ConnectionAttempt {
+        case connected(device: USBDevice, info: DeviceInfo)
+        /// Nothing to connect to, or something that will not fix itself by
+        /// waiting. Plugging the panel back in raises a hotplug event, so the
+        /// engine can go dormant instead of polling.
+        case unavailable
+        /// The panel is present but another process owns it. Whoever holds it
+        /// letting go produces no USB event at all, so nothing will ever wake
+        /// us — this is the one case that has to be retried on a timer.
+        case busy
+    }
+
+    private func establishConnection() -> ConnectionAttempt {
         // Metrics may have been stopped on a previous disconnect or on sleep.
         monitorRenderer.startMetrics()
 
@@ -471,20 +492,24 @@ final class DisplayEngine: @unchecked Sendable {
             // busy device is not an error state, an unexpected failure is.
             let message: String
             let state: AppRuntimeState
+            let outcome: ConnectionAttempt
             switch error {
             case USBError.deviceNotFound:
                 message = "Device not found"
                 state = .disconnected
+                outcome = .unavailable
             case USBError.deviceBusy:
                 message = "Device busy (another app?)"
                 state = .disconnected
+                outcome = .busy
             default:
                 message = "Error: \(error)"
                 state = .error(message)
+                outcome = .unavailable
             }
             postStatus(state, message: message)
             if !previewActive { monitorRenderer.stopMetrics() }
-            return nil
+            return outcome
         }
 
         do {
@@ -492,11 +517,11 @@ final class DisplayEngine: @unchecked Sendable {
             device = dev
             postStatus(.running, deviceInfo: info,
                        message: "Connected (\(info.width)x\(info.height))")
-            return (dev, info)
+            return .connected(device: dev, info: info)
         } catch {
             dev.close()
             postStatus(.error("Handshake failed"), message: "Handshake failed")
-            return nil
+            return .unavailable
         }
     }
 

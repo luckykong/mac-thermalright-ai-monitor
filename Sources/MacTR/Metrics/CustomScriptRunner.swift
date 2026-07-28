@@ -396,7 +396,16 @@ final class CustomScriptRunner: @unchecked Sendable {
         let output = stdoutAccumulator.string()
         let diagnostics = stderrAccumulator.string()
         if !diagnostics.isEmpty {
-            log("[Script] \(configuration.resolvedDisplayName) stderr: \(diagnostics)")
+            // Never logged verbatim. A custom script's stderr is arbitrary user
+            // content that routinely carries credentials — an HTTP client that
+            // fails prints the URL it called, key and all — and `log` is
+            // `.notice` with `privacy: .public`, so it would sit in the system
+            // log store for days. The byte count is enough to show a script is
+            // noisy; the text itself goes no further than an attached terminal.
+            log("[Script] \(configuration.resolvedDisplayName) wrote"
+                + " \(diagnostics.utf8.count) bytes to stderr")
+            logVerbose(
+                "[Script] \(configuration.resolvedDisplayName) stderr: \(diagnostics)")
         }
 
         if timedOut {

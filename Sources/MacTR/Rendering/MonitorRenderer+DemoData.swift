@@ -1,4 +1,5 @@
-// MonitorRenderer+DemoData.swift — deterministic sample data for --demo,// --gif and the documentation screenshots. Kept apart from the live renderer
+// MonitorRenderer+DemoData.swift — deterministic sample data for --demo,
+// --gif and the documentation screenshots. Kept apart from the live renderer
 // so the hardcoded fixtures never sit in the way of reading it.
 
 import AppKit

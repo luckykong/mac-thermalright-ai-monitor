@@ -558,6 +558,12 @@ final class DisplayEngine: @unchecked Sendable {
                             log("[OK] Active! ~\(jpeg.count / 1024)KB/frame")
                         }
                         postStatus(.running, message: "Active")
+                    } catch let error as LYError {
+                        // A rejected frame is our problem, not the device's.
+                        // Tearing the connection down here would report a
+                        // disconnect the user cannot act on, then reconnect
+                        // straight back into the same bad frame, forever.
+                        log("[ERROR] Frame rejected, skipping it: \(error)")
                     } catch {
                         log("[ERROR] Frame send failed: \(error)")
                         self.device?.close()

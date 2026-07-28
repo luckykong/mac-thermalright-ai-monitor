@@ -122,5 +122,41 @@ struct BrightnessTests {
         #expect(abs(g - b) < 25, "red's two low channels stay balanced")
     }
 
+    /// The quality ladder used to return its 0.3 floor without re-checking the
+    /// size, so a frame that fits at no quality still reached LYProtocol and
+    /// made it throw `frameTooLarge`. AppState read that as a dead device,
+    /// closed a healthy one and reconnected into the same frame forever.
+    @Test("An unencodable frame is dropped rather than sent oversized")
+    func oversizedFrameIsDropped() throws {
+        let width = 64
+        let height = 64
+        let context = try #require(CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        // Per-pixel noise is the expensive case for JPEG: no run of flat colour
+        // for the DCT to collapse, so it stays large even at minimum quality.
+        for y in 0..<height {
+            for x in 0..<width {
+                context.setFillColor(CGColor(
+                    red: CGFloat((x &* 37 &+ y &* 91) % 255) / 255,
+                    green: CGFloat((x &* 113 &+ y &* 17) % 255) / 255,
+                    blue: CGFloat((x &* 59 &+ y &* 151) % 255) / 255,
+                    alpha: 1))
+                context.fill(CGRect(x: x, y: y, width: 1, height: 1))
+            }
+        }
+        let source = try #require(context.makeImage())
 
+        // 200 bytes is below any real JPEG's header, so no quality can fit it.
+        #expect(JPEGEncoder.encode(
+            source, brightness: 1, rotate180: false, maxBytes: 200) == nil)
+
+        // The same image encodes fine against a realistic budget — proving the
+        // nil above comes from the size guard, not from a broken encode path.
+        let generous = try #require(JPEGEncoder.encode(
+            source, brightness: 1, rotate180: false, maxBytes: 650_000))
+        #expect(generous.count <= 650_000)
+    }
 }

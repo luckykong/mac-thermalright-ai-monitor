@@ -29,6 +29,10 @@ enum JPEGEncoder {
     /// per frame just to rediscover the same answer. Guarded by `encodeLock`.
     nonisolated(unsafe) private static var lastGoodQuality = 0.9
 
+    /// One line, not one per frame: if a frame cannot be made to fit, neither
+    /// can the next one, and the loop runs several times a second.
+    nonisolated(unsafe) private static var reportedOversize = false
+
     /// Encode a CGImage to JPEG for the LCD, optionally rotating 180° and
     /// brightening. Reduces quality if over 650KB (matches Python behavior).
     ///
@@ -101,7 +105,21 @@ enum JPEGEncoder {
                 quality -= 0.05
             }
             lastGoodQuality = 0.3
-            return jpegData(from: finalImage, quality: 0.3)
+            // The floor was returned unchecked, so a frame that will not fit at
+            // any quality still reached the wire and made LYProtocol throw
+            // frameTooLarge — which the engine cannot tell apart from a real USB
+            // failure. Drop the frame instead and let the next one try.
+            guard let atFloor = jpegData(from: finalImage, quality: 0.3),
+                  atFloor.count <= maxBytes
+            else {
+                if !reportedOversize {
+                    reportedOversize = true
+                    log("[JPEG] Frame exceeds \(maxBytes) bytes even at minimum"
+                        + " quality; dropping it. Logged once.")
+                }
+                return nil
+            }
+            return atFloor
         }
     }
 

@@ -19,3 +19,4 @@ xcuserdata/
 # Local / private
 *.log
 img/*.HEIC
+claude.sh

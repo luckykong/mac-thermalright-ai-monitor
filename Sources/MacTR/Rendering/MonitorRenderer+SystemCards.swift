@@ -26,7 +26,7 @@ extension MonitorRenderer {
                   font: Fonts.system(18, weight: .bold), color: Color.blue)
         drawCompactGauge(
             ctx, cx: x + 48, cy: y + 76, percent: cpu.total,
-            color: Color.forPercent(cpu.total), dark: Color.forPercentDark(cpu.total))
+            color: Color.forPercent(cpu.total))
 
         let statX = x + 88
         Draw.text(ctx, language.text(.cpuTemperature), x: statX, y: y + 44,
@@ -97,8 +97,7 @@ extension MonitorRenderer {
 
         drawCompactGauge(
             ctx, cx: x + 48, cy: y + 76, percent: Double(gpu.deviceUtil),
-            color: Color.forPercent(Double(gpu.deviceUtil)),
-            dark: Color.forPercentDark(Double(gpu.deviceUtil)))
+            color: Color.forPercent(Double(gpu.deviceUtil)))
 
         let sx = x + 91
         let sw = w - 105
@@ -150,7 +149,7 @@ extension MonitorRenderer {
 
         drawCompactGauge(
             ctx, cx: x + 48, cy: y + 76, percent: pct,
-            color: pressureColor, dark: Color.forPressureDark(mem.pressure))
+            color: pressureColor)
 
         let pressureText = mem.pressure >= 4 ? language.text(.memoryCritical)
             : (mem.pressure >= 2
@@ -545,11 +544,19 @@ extension MonitorRenderer {
         ctx.restoreGState()
     }
 
+    /// The track is deliberately NEUTRAL rather than a dark shade of the fill
+    /// colour. A same-hue track made the ring read as one solid circle at this
+    /// size — the sweep was there, but nobody could see where it ended, so the
+    /// gauge looked frozen while the number beside it moved. `Color.barBG` is
+    /// the same track the bar gauges already use.
+    ///
+    /// Radius drops by 1 as thickness grows by 2, so the outer edge — and the
+    /// card layout around it — is unchanged.
     func drawCompactGauge(_ ctx: CGContext, cx: Int, cy: Int,
-                                  percent: Double, color: CGColor, dark: CGColor) {
+                                  percent: Double, color: CGColor) {
         Draw.arcGauge(
-            ctx, cx: cx, cy: cy, radius: 29, percent: percent,
-            color: color, colorDark: dark, thickness: 6)
+            ctx, cx: cx, cy: cy, radius: 28, percent: percent,
+            color: color, colorDark: Color.barBG, thickness: 8)
         Draw.centeredText(
             ctx, String(format: "%.0f", percent), cx: cx, y: cy - 17,
             font: Fonts.system(25, weight: .bold), color: Color.textW)

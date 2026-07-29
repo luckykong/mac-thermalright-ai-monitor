@@ -2,6 +2,42 @@
 
 All notable changes to MacTR are documented here.
 
+## [1.4.5] - 2026-07-30
+
+### Fixed
+
+- The CPU temperature was read from the wrong sensors. It came from IOHID's
+  `PMU tdie*`, which is not the hot spot: measured idle versus eight busy
+  threads, the SMC's `Tp*` sensors went 65.2 → 111.8 °C while HID reported
+  54.1 → 74.4. The peak was understated by up to 37 °C. SMC is now the primary
+  source, HID the fallback.
+- The SMC key names were hardcoded per chip generation and largely wrong on
+  this machine — `Tp01`, `Tp05`, `Tp0D`, `Tp1h`, `Tp0V`, `Te0L`, `Tg0U` and
+  `Tg0g` do not exist, while real sensors including `Te04`, `Te06`, `Tex0…3`,
+  `Tg04`, `Tg0y` and `Tg1l` were never read. The key table is enumerated once
+  and filtered by prefix instead: 112 CPU and 22 GPU sensors here, against
+  roughly 21 guessed at with about half absent. No new hardcoded list is needed
+  for future silicon.
+- CPU and GPU disagreed on how to aggregate — max versus mean — so the two
+  numbers on the panel meant different things. Both now report the hottest
+  sensor, which also makes an idle core's placeholder reading harmless.
+- Temperature colour bands move to 70/90 °C, matched to a hottest-core reading
+  and Apple Silicon's ~110 °C throttle point. The old 50/65 split was written
+  for a cooler averaged value and would now sit on red permanently.
+- The CPU/GPU/Memory gauge rings looked frozen. The sweep was correct all
+  along, but the track was drawn in a dark shade of the fill colour, so a
+  partial ring read as one solid circle. The track is now neutral — the same
+  one the bar gauges use — and the ring is thicker, with the outer edge and
+  card layout unchanged.
+
+### Notes
+
+Reading three times as many temperature sensors costs less than the old path,
+not more: each key's size and type is captured during the one-time scan so
+steady-state reads skip the `kSMCGetKeyInfo` round trip (55.5 → 23.7 ms), and
+the sweep is throttled to 4 s. Amortised at the fastest cadence that is 0.67%
+of one core, against roughly 0.85% before.
+
 ## [1.4.4] - 2026-07-29
 
 ### Added

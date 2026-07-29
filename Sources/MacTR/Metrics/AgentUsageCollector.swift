@@ -215,7 +215,15 @@ final class AgentUsageCollector: @unchecked Sendable {
 
     func collect() -> AgentsSnapshot {
         rolloverIfNeeded()
-        return AgentsSnapshot(claude: collectClaude(), codex: collectCodex())
+        // Read once per snapshot and pass it down. The flag is written from the
+        // settings thread, so re-reading it per column could straddle a toggle
+        // and emit a frame where one agent is badged and the other is not, or
+        // where a column's badge names a different accounting than the number
+        // beside it.
+        let countingCached = countsCachedTokens
+        return AgentsSnapshot(
+            claude: collectClaude(countingCached: countingCached),
+            codex: collectCodex(countingCached: countingCached))
     }
 
     /// Reset accumulators at local midnight. Timestamps in both formats are
@@ -318,7 +326,7 @@ final class AgentUsageCollector: @unchecked Sendable {
         return result
     }
 
-    private func collectClaude() -> AgentUsage {
+    private func collectClaude(countingCached: Bool) -> AgentUsage {
         let root = home + "/.claude/projects"
         guard fm.fileExists(atPath: root) else {
             return AgentUsage(available: false, todayInputTokens: 0, todayOutputTokens: 0,
@@ -372,7 +380,7 @@ final class AgentUsageCollector: @unchecked Sendable {
         }
         return AgentUsage(available: true,
                           todayInputTokens: claudeTokens.input(
-                              countingCached: countsCachedTokens),
+                              countingCached: countingCached),
                           todayOutputTokens: claudeTokens.output,
                           secondsSinceActive: secondsAgo,
                           project: project, activity: activity,
@@ -380,7 +388,7 @@ final class AgentUsageCollector: @unchecked Sendable {
                           needsAttention: attention, isWorking: working,
                           stepCurrent: step?.current, stepTotal: step?.total,
                           stepText: step?.text,
-                          countsCachedTokens: countsCachedTokens)
+                          countsCachedTokens: countingCached)
     }
 
     private func accumulateClaudeLine(_ line: String) {
@@ -511,7 +519,7 @@ final class AgentUsageCollector: @unchecked Sendable {
 
     // MARK: - Codex
 
-    private func collectCodex() -> AgentUsage {
+    private func collectCodex(countingCached: Bool) -> AgentUsage {
         let root = home + "/.codex/sessions"
         guard fm.fileExists(atPath: root) else {
             return AgentUsage(available: false, todayInputTokens: 0, todayOutputTokens: 0,
@@ -582,7 +590,7 @@ final class AgentUsageCollector: @unchecked Sendable {
         }
         return AgentUsage(available: true,
                           todayInputTokens: codexTokens.input(
-                              countingCached: countsCachedTokens),
+                              countingCached: countingCached),
                           todayOutputTokens: codexTokens.output,
                           secondsSinceActive: secondsAgo,
                           project: project, activity: activity,
@@ -590,7 +598,7 @@ final class AgentUsageCollector: @unchecked Sendable {
                           needsAttention: attention, isWorking: working,
                           stepCurrent: step?.current, stepTotal: step?.total,
                           stepText: step?.text,
-                          countsCachedTokens: countsCachedTokens)
+                          countsCachedTokens: countingCached)
     }
 
     /// Active `update_plan` → (currentStep, totalSteps, stepText), or nil.

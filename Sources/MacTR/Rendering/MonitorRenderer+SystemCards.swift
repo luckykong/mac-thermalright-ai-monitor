@@ -34,7 +34,7 @@ extension MonitorRenderer {
         let tempString = temp.cpuTemp.map { String(format: "%.0f°C", $0) } ?? "N/A"
         let tempColor: CGColor
         if let value = temp.cpuTemp {
-            tempColor = value > 65 ? Color.red : (value > 50 ? Color.orange : Color.green)
+            tempColor = Color.forTemperature(value)
         } else {
             tempColor = Color.textD
         }
@@ -122,7 +122,7 @@ extension MonitorRenderer {
             let font = Fonts.system(11, weight: .semibold)
             let width = TextMetrics.width(of: value, font: font)
             Draw.text(ctx, value, x: Int(CGFloat(x + w - 14) - width), y: y + 108,
-                      font: font, color: gpuTemp > 70 ? Color.red : Color.green)
+                      font: font, color: Color.forTemperature(gpuTemp))
         }
     }
 

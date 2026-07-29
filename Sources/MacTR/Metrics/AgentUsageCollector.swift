@@ -122,13 +122,18 @@ struct AgentUsage: Sendable {
     let stepCurrent: Int?           // active plan step (1-based); nil = no plan
     let stepTotal: Int?             // total plan steps
     let stepText: String?           // description of the active step
+    /// Which accounting produced the totals above. Carried to the renderer so
+    /// the panel can say so: the same label over numbers an order of magnitude
+    /// apart is otherwise indistinguishable.
+    let countsCachedTokens: Bool
     var todayTotalTokens: UInt64 { todayInputTokens + todayOutputTokens }
 
     init(available: Bool, todayInputTokens: UInt64, todayOutputTokens: UInt64,
          secondsSinceActive: Int?, project: String?, activity: String?,
          quotaWindows: [QuotaWindow] = [],
          needsAttention: Bool = false, isWorking: Bool = false,
-         stepCurrent: Int? = nil, stepTotal: Int? = nil, stepText: String? = nil) {
+         stepCurrent: Int? = nil, stepTotal: Int? = nil, stepText: String? = nil,
+         countsCachedTokens: Bool = true) {
         self.available = available
         self.todayInputTokens = todayInputTokens
         self.todayOutputTokens = todayOutputTokens
@@ -141,6 +146,7 @@ struct AgentUsage: Sendable {
         self.stepCurrent = stepCurrent
         self.stepTotal = stepTotal
         self.stepText = stepText
+        self.countsCachedTokens = countsCachedTokens
     }
 }
 
@@ -373,7 +379,8 @@ final class AgentUsageCollector: @unchecked Sendable {
                           quotaWindows: claudeQuota.windows(),
                           needsAttention: attention, isWorking: working,
                           stepCurrent: step?.current, stepTotal: step?.total,
-                          stepText: step?.text)
+                          stepText: step?.text,
+                          countsCachedTokens: countsCachedTokens)
     }
 
     private func accumulateClaudeLine(_ line: String) {
@@ -582,7 +589,8 @@ final class AgentUsageCollector: @unchecked Sendable {
                           quotaWindows: quotaWindows,
                           needsAttention: attention, isWorking: working,
                           stepCurrent: step?.current, stepTotal: step?.total,
-                          stepText: step?.text)
+                          stepText: step?.text,
+                          countsCachedTokens: countsCachedTokens)
     }
 
     /// Active `update_plan` → (currentStep, totalSteps, stepText), or nil.

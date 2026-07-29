@@ -33,7 +33,8 @@ for each agent, side by side:
 - **Plan / step progress** — a localized `步骤 4/6` / `Step 4/6` badge plus a segmented progress bar, parsed from
   Codex `update_plan` and Claude `TodoWrite`. Stale plans from a finished turn disappear.
 - **Today's token usage** — total + In/Out, using compact `万 / 亿` in Chinese and
-  K / M / B in English.
+  K / M / B in English. Whether context re-read from the prompt cache counts toward the
+  total is your choice (see below).
 - **Remaining quota** — % left + reset countdown. Codex comes straight from `rate_limits`
   in its session logs; Claude shows its 5-hour and 7-day windows side by side, from the
   one network request described below.
@@ -285,6 +286,24 @@ network. It reads the local session transcripts the CLIs already write to disk:
 
 Token totals are scoped to the local day; the panel gracefully shows the last session's
 context when an agent hasn't run yet today.
+
+### Do cached tokens count?
+
+In a long session the overwhelming majority of input is **context re-read from the
+prompt cache** — measured at well over 90% of the input side — so a total that folds it
+in reads an order of magnitude larger than the figures Claude Code / Codex report
+themselves. Both readings are correct; they answer different questions, so it is a
+setting: **Settings → Display → Agent Token Usage → "Count cached-read tokens"**
+(on by default, preserving the previous behaviour).
+
+| | On (default) | Off |
+|---|---|---|
+| Answers | how many tokens were sent to the model today | how much genuinely new content there was today |
+| Claude | `input_tokens + cache_creation + cache_read` | `input_tokens + cache_creation` |
+| Codex | `input_tokens + cache_write` | `input_tokens - cached_input + cache_write` |
+
+Cache *writes* count either way — they are content sent for the first time that merely
+happens to be retained. Flipping the switch takes effect immediately; no rescan.
 
 ### Claude quota: the one network request
 

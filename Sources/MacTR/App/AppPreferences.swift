@@ -137,6 +137,7 @@ final class AppPreferences {
         static let customScriptDisplayName = "customScriptDisplayName"
         static let customScriptIntervalSeconds = "customScriptIntervalSeconds"
         static let customScriptFontMode = "customScriptFontMode"
+        static let countCachedTokens = "countCachedTokens"
     }
 
     private let defaults: UserDefaults
@@ -263,6 +264,14 @@ final class AppPreferences {
         didSet { save(customScriptFontMode.rawValue, forKey: Key.customScriptFontMode) }
     }
 
+    /// Whether the AGENTS card's token totals include context re-read from the
+    /// prompt cache. Defaults to on so an upgrade does not silently redefine
+    /// the number people have been watching; turning it off leaves only the
+    /// content actually sent fresh, which is the smaller figure the CLIs show.
+    var countCachedTokens: Bool {
+        didSet { save(countCachedTokens, forKey: Key.countCachedTokens) }
+    }
+
     var customScriptConfiguration: CustomScriptConfiguration {
         CustomScriptConfiguration(
             enabled: customScriptEnabled,
@@ -343,6 +352,9 @@ final class AppPreferences {
         } else {
             customScriptFontMode = .automatic
         }
+
+        countCachedTokens = defaults.object(forKey: Key.countCachedTokens) == nil
+            ? true : defaults.bool(forKey: Key.countCachedTokens)
     }
 
     nonisolated static func normalizeMinutes(_ value: Int) -> Int {

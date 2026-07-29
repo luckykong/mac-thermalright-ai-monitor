@@ -85,6 +85,9 @@ enum L10nKey: CaseIterable, Sendable {
     case rotation
     case rotate180
     case rotationHint
+    case agentTokenUsage
+    case countCachedTokens
+    case countCachedTokensHint
 
     // Custom card settings
     case customScriptCard
@@ -315,6 +318,18 @@ enum AppLocalization {
         .rotationHint: Pair(
             zhHans: "如果实体屏幕画面上下颠倒，请启用此选项。",
             english: "Enable if the physical display appears upside down."),
+        .agentTokenUsage: Pair(zhHans: "Agent Token 用量", english: "Agent Token Usage"),
+        .countCachedTokens: Pair(
+            zhHans: "计入缓存读取的 Token",
+            english: "Count cached-read tokens"),
+        .countCachedTokensHint: Pair(
+            zhHans: "开启时统计发给模型的全部输入，命中提示词缓存被重复读取的上下文也计算在内，"
+                + "数字通常比 Claude Code / Codex 自己显示的大一个量级。"
+                + "关闭后只统计当次新发送的内容（缓存写入仍计入）。",
+            english: "On, this counts every input token sent to the model, including context "
+                + "re-read from the prompt cache — usually an order of magnitude larger than "
+                + "the figures Claude Code / Codex report. Off, only newly sent content counts "
+                + "(cache writes still do)."),
 
         .customScriptCard: Pair(zhHans: "自定义脚本卡片", english: "Custom Script Card"),
         .showCustomScriptOutput: Pair(zhHans: "显示自定义脚本输出", english: "Show custom script output"),

@@ -208,7 +208,7 @@ private func runSettingsSnapshot() {
         launchAtLogin: launchAtLogin,
         pauseDisplay: {},
         resumeDisplay: {},
-        initialTab: args.contains("--settings-general") ? .general : .customCard)
+        initialTab: settingsSnapshotTab(args))
         .preferredColorScheme(.dark)
         .background(SwiftUI.Color(nsColor: .windowBackgroundColor))
 
@@ -223,6 +223,14 @@ private func runSettingsSnapshot() {
     } else {
         print("[Settings Snapshot] failed")
     }
+}
+
+/// Which tab `--settings-snapshot` captures. Custom Card unless asked otherwise,
+/// since that is the one the README documents.
+private func settingsSnapshotTab(_ args: [String]) -> SettingsTab {
+    if args.contains("--settings-general") { return .general }
+    if args.contains("--settings-display") { return .display }
+    return .customCard
 }
 
 @MainActor

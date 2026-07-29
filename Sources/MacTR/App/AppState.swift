@@ -132,7 +132,8 @@ final class AppState {
             rotate: preferences.rotateDisplay,
             customScript: preferences.customScriptConfiguration,
             language: preferences.language,
-            customScriptFontMode: preferences.customScriptFontMode)
+            customScriptFontMode: preferences.customScriptFontMode,
+            countCachedTokens: preferences.countCachedTokens)
     }
 
     func stop() {
@@ -208,7 +209,8 @@ final class AppState {
             rotate: preferences.rotateDisplay,
             customScript: preferences.customScriptConfiguration,
             language: preferences.language,
-            customScriptFontMode: preferences.customScriptFontMode)
+            customScriptFontMode: preferences.customScriptFontMode,
+            countCachedTokens: preferences.countCachedTokens)
     }
 
     /// Latest rendered frame for the on-Mac preview window
@@ -293,6 +295,7 @@ final class DisplayEngine: @unchecked Sendable {
     private var customScript = CustomScriptConfiguration.disabled
     private var customScriptFontMode: CustomScriptFontMode = .automatic
     private var language: AppLanguage = .simplifiedChinese
+    private var countCachedTokens = true
     private var previewActive = false
 
     private let frameLock = NSLock()
@@ -313,7 +316,8 @@ final class DisplayEngine: @unchecked Sendable {
         rotate: Bool,
         customScript: CustomScriptConfiguration,
         language: AppLanguage,
-        customScriptFontMode: CustomScriptFontMode
+        customScriptFontMode: CustomScriptFontMode,
+        countCachedTokens: Bool
     ) {
         enabled = true
         self.currentSet = set
@@ -323,11 +327,13 @@ final class DisplayEngine: @unchecked Sendable {
         self.customScript = customScript
         self.customScriptFontMode = customScriptFontMode
         self.language = language
+        self.countCachedTokens = countCachedTokens
         monitorRenderer.configure(
             performanceMode: performanceMode,
             customScript: customScript,
             language: language,
-            customScriptFontMode: customScriptFontMode)
+            customScriptFontMode: customScriptFontMode,
+            countCachedTokens: countCachedTokens)
 
         usbQueue.async { [weak self] in
             guard let self else { return }
@@ -388,9 +394,10 @@ final class DisplayEngine: @unchecked Sendable {
         rotate: Bool,
         customScript: CustomScriptConfiguration,
         language: AppLanguage,
-        customScriptFontMode: CustomScriptFontMode
+        customScriptFontMode: CustomScriptFontMode,
+        countCachedTokens: Bool
     ) {
-        log("[Engine] Settings updated: set=\(set.rawValue), brightness=\(brightness), performance=\(performanceMode.rawValue), rotate=\(rotate)")
+        log("[Engine] Settings updated: set=\(set.rawValue), brightness=\(brightness), performance=\(performanceMode.rawValue), rotate=\(rotate), cachedTokens=\(countCachedTokens)")
         self.currentSet = set
         self.brightness = brightness
         self.performanceMode = performanceMode
@@ -398,11 +405,13 @@ final class DisplayEngine: @unchecked Sendable {
         self.customScript = customScript
         self.customScriptFontMode = customScriptFontMode
         self.language = language
+        self.countCachedTokens = countCachedTokens
         monitorRenderer.configure(
             performanceMode: performanceMode,
             customScript: customScript,
             language: language,
-            customScriptFontMode: customScriptFontMode)
+            customScriptFontMode: customScriptFontMode,
+            countCachedTokens: countCachedTokens)
     }
 
     func setPreviewActive(_ active: Bool) {

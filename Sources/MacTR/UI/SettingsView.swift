@@ -221,6 +221,16 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section(t(.agentTokenUsage)) {
+                Toggle(t(.countCachedTokens), isOn: $preferences.countCachedTokens)
+                    .onChange(of: preferences.countCachedTokens) {
+                        state.applySettings()
+                    }
+                Text(t(.countCachedTokensHint))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()

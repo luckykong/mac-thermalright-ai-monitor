@@ -10,6 +10,74 @@
 // full parses happen only on first scan and day rollover.
 
 import Foundation
+import Synchronization
+
+// MARK: - Token accounting
+
+/// Splits one request's raw `usage` record into the two halves the display
+/// setting toggles between.
+///
+/// `fresh` is content the model had to be sent for the first time; `cached` is
+/// context it re-read from the prompt cache. The distinction matters because
+/// cache reads dominate any long agent session — they routinely account for
+/// well over 90% of the input side — so a total that folds them in reads an
+/// order of magnitude larger than the per-session numbers the CLIs report.
+///
+/// Cache *writes* count as fresh, not cached: they are new content being sent
+/// for the first time and merely happen to be retained afterwards.
+///
+/// A free enum rather than methods on the collector so the arithmetic is
+/// unit-testable without touching the filesystem.
+enum AgentTokenSplit {
+
+    struct Usage: Equatable, Sendable {
+        var fresh: UInt64 = 0
+        var cached: UInt64 = 0
+        var output: UInt64 = 0
+
+        /// The input figure to display; `cached` is folded in only when the
+        /// user asked for it.
+        func input(countingCached: Bool) -> UInt64 {
+            countingCached ? fresh + cached : fresh
+        }
+
+        static func + (lhs: Usage, rhs: Usage) -> Usage {
+            Usage(fresh: lhs.fresh + rhs.fresh,
+                  cached: lhs.cached + rhs.cached,
+                  output: lhs.output + rhs.output)
+        }
+
+        static func += (lhs: inout Usage, rhs: Usage) { lhs = lhs + rhs }
+    }
+
+    /// Claude's `message.usage`. The three input fields are disjoint:
+    /// `input_tokens` excludes both cache figures.
+    static func claude(_ usage: [String: Any]) -> Usage {
+        Usage(
+            fresh: uint(usage["input_tokens"])
+                + uint(usage["cache_creation_input_tokens"]),
+            cached: uint(usage["cache_read_input_tokens"]),
+            output: uint(usage["output_tokens"]))
+    }
+
+    /// Codex's `info.last_token_usage`. Unlike Claude, `input_tokens` already
+    /// CONTAINS `cached_input_tokens`, so the fresh half is the difference;
+    /// `cache_write_input_tokens` sits outside it and is added back.
+    static func codex(_ usage: [String: Any]) -> Usage {
+        let input = uint(usage["input_tokens"])
+        // Clamped: the subtraction is on UInt64, and a malformed record where
+        // the cached count exceeds the total would otherwise trap.
+        let cached = min(uint(usage["cached_input_tokens"]), input)
+        return Usage(
+            fresh: input - cached + uint(usage["cache_write_input_tokens"]),
+            cached: cached,
+            output: uint(usage["output_tokens"]))
+    }
+
+    private static func uint(_ v: Any?) -> UInt64 {
+        (v as? NSNumber)?.uint64Value ?? 0
+    }
+}
 
 // MARK: - Data Structures
 
@@ -39,7 +107,10 @@ struct QuotaWindow: Sendable, Equatable {
 
 struct AgentUsage: Sendable {
     let available: Bool             // data directory exists at all
-    let todayInputTokens: UInt64    // includes cache read/write tokens
+    /// Already resolved for display: cache-read tokens are folded in or left
+    /// out according to the user's "count cached tokens" preference. Cache
+    /// writes always count — they are new content, not re-read context.
+    let todayInputTokens: UInt64
     let todayOutputTokens: UInt64
     let secondsSinceActive: Int?    // nil = no session today
     let project: String?            // cwd basename of most recent session
@@ -106,11 +177,20 @@ final class AgentUsageCollector: @unchecked Sendable {
     private static let maxScannedFiles = 200
     private var claudeScanOverflowed = false
     private var codexScanOverflowed = false
-    private var claudeInput: UInt64 = 0
-    private var claudeOutput: UInt64 = 0
+    /// Both halves are always accumulated, so flipping `countsCachedTokens`
+    /// takes effect on the next tick without re-reading a single transcript.
+    private var claudeTokens = AgentTokenSplit.Usage()
     private var codexOffsets: [String: UInt64] = [:]
-    private var codexInput: UInt64 = 0
-    private var codexOutput: UInt64 = 0
+    private var codexTokens = AgentTokenSplit.Usage()
+
+    /// Whether cache-read tokens are folded into the displayed input total.
+    /// Written from the settings thread, read on the metrics queue.
+    private let countCachedTokensFlag = Atomic<Bool>(true)
+
+    var countsCachedTokens: Bool {
+        get { countCachedTokensFlag.load(ordering: .acquiring) }
+        set { countCachedTokensFlag.store(newValue, ordering: .releasing) }
+    }
 
     // Attention edge tracking — flash only for the first N seconds after the
     // waiting/done state appears, not for as long as it persists
@@ -146,11 +226,11 @@ final class AgentUsageCollector: @unchecked Sendable {
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         todayStartISO = iso.string(from: Calendar.current.startOfDay(for: Date()))
 
-        claudeOffsets = [:]; claudeSeenIDs = []; claudeInput = 0; claudeOutput = 0
+        claudeOffsets = [:]; claudeSeenIDs = []; claudeTokens = .init()
         claudeSeenIDsOverflowed = false
         claudeScanOverflowed = false
         codexScanOverflowed = false
-        codexOffsets = [:]; codexInput = 0; codexOutput = 0
+        codexOffsets = [:]; codexTokens = .init()
     }
 
     // MARK: - Claude
@@ -284,8 +364,10 @@ final class AgentUsageCollector: @unchecked Sendable {
                 attention = false
             }
         }
-        return AgentUsage(available: true, todayInputTokens: claudeInput,
-                          todayOutputTokens: claudeOutput,
+        return AgentUsage(available: true,
+                          todayInputTokens: claudeTokens.input(
+                              countingCached: countsCachedTokens),
+                          todayOutputTokens: claudeTokens.output,
                           secondsSinceActive: secondsAgo,
                           project: project, activity: activity,
                           quotaWindows: claudeQuota.windows(),
@@ -313,10 +395,7 @@ final class AgentUsageCollector: @unchecked Sendable {
                 return
             }
         }
-        claudeInput += uint(usage["input_tokens"])
-            + uint(usage["cache_creation_input_tokens"])
-            + uint(usage["cache_read_input_tokens"])
-        claudeOutput += uint(usage["output_tokens"])
+        claudeTokens += AgentTokenSplit.claude(usage)
     }
 
     /// From the tail of the most recent session: project, the last thing Claude SAID
@@ -494,8 +573,10 @@ final class AgentUsageCollector: @unchecked Sendable {
                 attention = false
             }
         }
-        return AgentUsage(available: true, todayInputTokens: codexInput,
-                          todayOutputTokens: codexOutput,
+        return AgentUsage(available: true,
+                          todayInputTokens: codexTokens.input(
+                              countingCached: countsCachedTokens),
+                          todayOutputTokens: codexTokens.output,
                           secondsSinceActive: secondsAgo,
                           project: project, activity: activity,
                           quotaWindows: quotaWindows,
@@ -632,9 +713,7 @@ final class AgentUsageCollector: @unchecked Sendable {
               let info = payload["info"] as? [String: Any],
               let last = info["last_token_usage"] as? [String: Any]
         else { return }
-        // input_tokens already includes cached_input_tokens; cache writes are separate
-        codexInput += uint(last["input_tokens"]) + uint(last["cache_write_input_tokens"])
-        codexOutput += uint(last["output_tokens"])
+        codexTokens += AgentTokenSplit.codex(last)
     }
 
     /// (project, activity, needsAttention). Attention: the last significant event is
@@ -854,10 +933,6 @@ final class AgentUsageCollector: @unchecked Sendable {
     private func parseJSON(_ s: String) -> [String: Any]? {
         guard let d = s.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
-    }
-
-    private func uint(_ v: Any?) -> UInt64 {
-        (v as? NSNumber)?.uint64Value ?? 0
     }
 
     /// Single line, capped length — display truncation happens at render time

@@ -98,12 +98,15 @@ struct MacTREntry {
 
         // Snapshot mode: render one frame and save as PNG
         // Usage: --snapshot path.png [--cores N] [--redact-agents]
+        //                            [--no-cached-tokens]
         if CommandLine.arguments.contains("--snapshot") {
             let renderer = MonitorRenderer()
             renderer.configure(
                 performanceMode: .balanced,
                 customScript: .disabled,
-                language: parseLanguage(CommandLine.arguments))
+                language: parseLanguage(CommandLine.arguments),
+                countCachedTokens: !CommandLine.arguments
+                    .contains("--no-cached-tokens"))
             let simCores = parseFlag(CommandLine.arguments, flag: "--cores")
             renderer.redactAgentDetails =
                 CommandLine.arguments.contains("--redact-agents")

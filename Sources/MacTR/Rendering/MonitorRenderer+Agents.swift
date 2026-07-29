@@ -152,8 +152,20 @@ extension MonitorRenderer {
         let tokY = py + ph - 126
         Draw.line(ctx, from: CGPoint(x: x, y: tokY - 12),
                   to: CGPoint(x: x + w, y: tokY - 12), color: Color.border)
-        Draw.text(ctx, language.text(.todayTokens), x: x, y: tokY,
-                  font: Fonts.system(17), color: Color.textL)
+        let tokLabel = language.text(.todayTokens)
+        let tokLabelFont = Fonts.system(17)
+        Draw.text(ctx, tokLabel, x: x, y: tokY,
+                  font: tokLabelFont, color: Color.textL)
+        // Badge the label when cache reads are excluded. Both accounting modes
+        // print the same words over numbers an order of magnitude apart, so
+        // without this the panel cannot be read without knowing the setting.
+        // Only the non-default mode is marked — the unbadged card keeps meaning
+        // exactly what it did before the setting existed.
+        if !usage.countsCachedTokens {
+            let labelW = TextMetrics.width(of: tokLabel, font: tokLabelFont)
+            drawNetTokensBadge(ctx, x: Int(CGFloat(x) + labelW) + 9, y: tokY,
+                               accent: accent, language: language)
+        }
         Draw.text(ctx, formatTokens(usage.todayTotalTokens, language: language),
                   x: x, y: tokY + 24,
                   font: Fonts.system(40, weight: .bold), color: Color.textW)
@@ -282,6 +294,32 @@ extension MonitorRenderer {
             ctx.addPath(CGPath(roundedRect: rect, cornerWidth: 3, cornerHeight: 3, transform: nil))
             ctx.fillPath()
         }
+    }
+
+    /// Small outlined pill marking a token total that excludes cache reads.
+    /// Tinted with the column's own accent so it reads as part of that agent's
+    /// card rather than as a warning — it states a unit, it is not an alert.
+    func drawNetTokensBadge(_ ctx: CGContext, x: Int, y: Int,
+                            accent: CGColor, language: AppLanguage) {
+        let text = language.text(.netTokensBadge)
+        let font = Fonts.system(12, weight: .semibold)
+        let textW = TextMetrics.width(of: text, font: font)
+        let padH: CGFloat = 6
+        let rect = CGRect(x: CGFloat(x), y: CGFloat(y) + 2,
+                          width: textW + padH * 2, height: 19)
+        let pill = CGPath(roundedRect: rect, cornerWidth: 5, cornerHeight: 5,
+                          transform: nil)
+
+        ctx.setFillColor(accent.copy(alpha: 0.18) ?? accent)
+        ctx.addPath(pill)
+        ctx.fillPath()
+        ctx.setStrokeColor(accent.copy(alpha: 0.55) ?? accent)
+        ctx.setLineWidth(1)
+        ctx.addPath(pill)
+        ctx.strokePath()
+
+        Draw.text(ctx, text, x: Int(rect.minX + padH), y: Int(rect.minY) + 2,
+                  font: font, color: accent)
     }
 
     /// Locale-aware compact token quantities. Chinese uses 万/亿 while English

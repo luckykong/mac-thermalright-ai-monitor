@@ -222,6 +222,7 @@ enum L10nKey: CaseIterable, Sendable {
     case step
     case idle
     case todayTokens
+    case netTokensBadge
     case tokenInput
     case tokenOutput
     case quotaRemaining
@@ -476,6 +477,9 @@ enum AppLocalization {
         .step: Pair(zhHans: "步骤 %d/%d", english: "Step %d/%d"),
         .idle: Pair(zhHans: "空闲", english: "Idle"),
         .todayTokens: Pair(zhHans: "今日 Token", english: "Tokens Today"),
+        // Marks a total that excludes cache reads. Must stay short — it sits
+        // inline beside the label on a 1920x480 panel.
+        .netTokensBadge: Pair(zhHans: "不含缓存", english: "NO CACHE"),
         .tokenInput: Pair(zhHans: "输入", english: "In"),
         .tokenOutput: Pair(zhHans: "输出", english: "Out"),
         .quotaRemaining: Pair(zhHans: "剩余额度 %.0f%%", english: "%.0f%% quota left"),

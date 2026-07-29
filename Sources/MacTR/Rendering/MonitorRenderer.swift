@@ -85,7 +85,8 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
                    secondsSinceActive: u.secondsSinceActive,
                    project: u.project, activity: u.activity,
                    quotaWindows: u.quotaWindows,
-                   needsAttention: true)
+                   needsAttention: true,
+                   countsCachedTokens: u.countsCachedTokens)
     }
 
     func configure(

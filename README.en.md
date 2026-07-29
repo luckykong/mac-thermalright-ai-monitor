@@ -305,6 +305,10 @@ setting: **Settings → Display → Agent Token Usage → "Count cached-read tok
 Cache *writes* count either way — they are content sent for the first time that merely
 happens to be retained. Flipping the switch takes effect immediately; no rescan.
 
+With it off, a **`NO CACHE`** badge (`不含缓存` in Chinese) appears beside "Tokens Today"
+on the panel, tinted with that column's own accent. The default accounting is left
+unmarked — an unbadged card means exactly what it did before this setting existed.
+
 ### Claude quota: the one network request
 
 Codex writes `rate_limits.primary` (percent used + reset time) into **every** rollout

@@ -21,6 +21,11 @@ All notable changes to MacTR are documented here.
   needs the mirror-image arithmetic of Claude's, because its `input_tokens`
   already contains `cached_input_tokens` while Claude's excludes both cache
   fields.
+- A `不含缓存` / `NO CACHE` badge beside "Tokens Today" whenever cache reads are
+  excluded, drawn in the column's own accent. Both modes otherwise print the
+  same label over numbers an order of magnitude apart, which makes the panel
+  unreadable without knowing the setting. The default accounting stays
+  unmarked, so an unbadged card means what it always did.
 
 ## [1.4.3] - 2026-07-28
 

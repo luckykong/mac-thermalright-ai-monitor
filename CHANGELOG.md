@@ -2,7 +2,7 @@
 
 All notable changes to MacTR are documented here.
 
-## [Unreleased]
+## [1.4.4] - 2026-07-29
 
 ### Added
 

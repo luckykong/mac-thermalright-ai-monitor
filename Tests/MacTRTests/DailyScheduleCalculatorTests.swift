@@ -145,8 +145,13 @@ struct DailyScheduleCalculatorTests {
         defaults.removePersistentDomain(forName: suiteName)
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
+        // Defaults to on, so the assertion below is meaningful only if it is
+        // flipped off here.
+        #expect(AppPreferences(defaults: defaults).countCachedTokens)
+
         let first = AppPreferences(defaults: defaults)
         first.language = .english
+        first.countCachedTokens = false
         first.brightness = 9
         first.refreshInterval = 2
         first.performanceMode = .eco
@@ -165,6 +170,7 @@ struct DailyScheduleCalculatorTests {
 
         let restored = AppPreferences(defaults: defaults)
         #expect(restored.language == .english)
+        #expect(!restored.countCachedTokens)
         #expect(restored.brightness == 9)
         #expect(restored.refreshInterval == 2)
         #expect(restored.performanceMode == .eco)

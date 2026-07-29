@@ -92,8 +92,12 @@ final class MonitorRenderer: FrameRenderer, @unchecked Sendable {
         performanceMode: PerformanceMode,
         customScript: CustomScriptConfiguration,
         language: AppLanguage,
-        customScriptFontMode: CustomScriptFontMode = .automatic
+        customScriptFontMode: CustomScriptFontMode = .automatic,
+        countCachedTokens: Bool = true
     ) {
+        // The collector keeps both halves of every token count, so this lands on
+        // the next metrics tick without a rescan and needs no cache invalidation.
+        agentCollector.countsCachedTokens = countCachedTokens
         lock.lock()
         self.performanceMode = performanceMode
         self.language = language

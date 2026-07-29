@@ -2,6 +2,26 @@
 
 All notable changes to MacTR are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Settings → Display → Agent Token Usage → "Count cached-read tokens", deciding
+  whether the AGENTS card's token totals include context re-read from the prompt
+  cache. In a long session cache reads are the overwhelming majority of the
+  input side — over 90% in the case that prompted this — so folding them in
+  produces a number an order of magnitude larger than the ones Claude Code and
+  Codex report for themselves. Neither reading is wrong, so it is now a choice.
+  Defaults to on, which is exactly the previous behaviour.
+
+  The collector accumulates the fresh and cached halves separately for both
+  agents, so toggling the setting lands on the next metrics tick without
+  re-reading a single transcript. Cache *writes* count either way: they are
+  content sent for the first time that merely happens to be retained. Codex
+  needs the mirror-image arithmetic of Claude's, because its `input_tokens`
+  already contains `cached_input_tokens` while Claude's excludes both cache
+  fields.
+
 ## [1.4.3] - 2026-07-28
 
 1.4.2 was prepared but never tagged or released, so its entries below ship here

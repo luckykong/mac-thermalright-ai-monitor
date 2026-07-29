@@ -26,7 +26,7 @@
 
 - **当前项目**和**它最后说的话** —— 消息里的 Markdown 表格会被渲染成对齐的表格,而不是原始的 `| … |` 文本。
 - **计划 / 步骤进度** —— `步骤 4/6` 徽章 + 分段进度条,从 Codex 的 `update_plan` 和 Claude 的 `TodoWrite` 解析而来。上一轮已完成的旧计划会自动消失。
-- **今日 Token 用量** —— 总量 + In/Out,用简洁的 `万 / 亿` 格式。
+- **今日 Token 用量** —— 总量 + In/Out,用简洁的 `万 / 亿` 格式。是否把命中提示词缓存、被重复读取的上下文算进去,可在设置里自行选择(见下)。
 - **剩余额度** —— 剩余百分比 + 重置倒计时。Codex 直接从会话日志里的 `rate_limits` 读取;Claude 需要额外配置一个缓存文件(见下),配好后会并排显示 5 小时与 7 天两个窗口。
 - **实时状态** —— agent 工作时该栏**缓慢呼吸**,完成一轮或需要你输入时**闪烁**约 10 秒提醒。
 
@@ -251,6 +251,22 @@ Xcode，脚本会跳过这些参数直接调用 `swift test`。
 | Codex | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` | agent 消息、`token_count`、`rate_limits`、`update_plan` |
 
 Token 总量按本地自然日统计;某个 agent 今天还没跑过时,面板会优雅地显示它上一次会话的上下文。
+
+### 缓存 Token 算不算?
+
+长会话里绝大部分输入都是**命中提示词缓存被重复读取的上下文** —— 实测中它能占到输入侧
+九成以上,所以把它算进去的总量,通常会比 Claude Code / Codex 自己显示的数字大一个量级。
+两种口径都是对的,只是回答的问题不同,所以做成了设置项:**设置 → 显示 → Agent Token 用量
+→「计入缓存读取的 Token」**(默认开启,保持旧版行为)。
+
+| | 开启(默认) | 关闭 |
+|---|---|---|
+| 回答的问题 | 今天一共往模型里送了多少 token | 今天真正新产生了多少内容 |
+| Claude | `input_tokens + cache_creation + cache_read` | `input_tokens + cache_creation` |
+| Codex | `input_tokens + cache_write` | `input_tokens - cached_input + cache_write` |
+
+缓存**写入**两种口径下都计入 —— 它是第一次发送的新内容,只是顺带被存了下来。
+切换开关立即生效,不需要重新扫描日志。
 
 ### Claude 剩余额度:唯一的一次联网
 

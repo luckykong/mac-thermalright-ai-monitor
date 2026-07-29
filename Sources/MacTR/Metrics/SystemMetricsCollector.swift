@@ -234,8 +234,12 @@ final class SystemMetricsCollector: @unchecked Sendable {
     /// discovered sensor costs ~24 ms, and a die's temperature does not move
     /// meaningfully inside one metrics tick, so the sweep runs on its own
     /// slower cadence instead of on every collect.
+    ///
+    /// Ages are measured against `systemUptime`, which is monotonic. Wall-clock
+    /// deltas go negative when NTP or the user moves the clock back, and a
+    /// negative age reads as "young" — the cache would then never expire.
     private var cachedDieTemps: (cpu: Double?, gpu: Double?)?
-    private var lastDieTempRead = Date.distantPast
+    private var lastDieTempUptime: TimeInterval = -.greatestFiniteMagnitude
     private static let dieTempInterval: TimeInterval = 4
 
     // MARK: - CPU
@@ -691,8 +695,8 @@ final class SystemMetricsCollector: @unchecked Sendable {
         // Cheap and genuinely live, so it is never cached.
         let thermalState = ProcessInfo.processInfo.thermalState.rawValue
 
-        if let cached = cachedDieTemps,
-           Date().timeIntervalSince(lastDieTempRead) < Self.dieTempInterval {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let cached = cachedDieTemps, now - lastDieTempUptime < Self.dieTempInterval {
             return TemperatureSnapshot(cpuTemp: cached.cpu, gpuTemp: cached.gpu,
                                        thermalState: thermalState)
         }
@@ -729,7 +733,7 @@ final class SystemMetricsCollector: @unchecked Sendable {
         smcLogOnce = false
 
         cachedDieTemps = (cpuTemp, gpuTemp)
-        lastDieTempRead = Date()
+        lastDieTempUptime = ProcessInfo.processInfo.systemUptime
         return TemperatureSnapshot(cpuTemp: cpuTemp, gpuTemp: gpuTemp, thermalState: thermalState)
     }
 
@@ -771,17 +775,23 @@ final class SystemMetricsCollector: @unchecked Sendable {
     /// Prefixes: `Tp`/`Te` are CPU performance/efficiency cores, `Tg` is GPU.
     private func discoverSMCTemperatureKeysIfNeeded() {
         guard smcCPUKeys == nil, smcOpened else { return }
+        // Read the table size BEFORE arming the memo. Failing here means the
+        // scan never ran, which is not the same as running and finding nothing:
+        // memoizing that would strand the process on the HID fallback until
+        // restart over one transient error.
+        guard let count = readSMCKeyCount() else { return }
+
         var cpu: [SMCTempKey] = []
         var gpu: [SMCTempKey] = []
         defer {
-            // Assigned even when empty so the scan is not repeated every tick.
+            // Assigned even when empty so a genuinely sensorless machine does
+            // not rescan the whole key table on every tick.
             smcCPUKeys = cpu
             smcGPUKeys = gpu
             log("[SMC] Discovered \(cpu.count) CPU and \(gpu.count) GPU"
                 + " temperature keys")
         }
 
-        guard let count = readSMCKeyCount() else { return }
         for index in 0..<count {
             guard let key = readSMCKey(at: index) else { continue }
             let isCPU = key.hasPrefix("Tp") || key.hasPrefix("Te")

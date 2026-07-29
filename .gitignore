@@ -18,5 +18,12 @@ xcuserdata/
 
 # Local / private
 *.log
+
+# Screenshots pasted or dropped into the repo root while working.
+# Anchored to the root so img/ stays tracked.
+/剪贴板*.png
+/截屏*.png
+/Screenshot*.png
+/Pasted*.png
 img/*.HEIC
 claude.sh

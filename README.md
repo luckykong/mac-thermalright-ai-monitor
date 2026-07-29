@@ -174,9 +174,9 @@ chmod +x packaging/build-release.sh
 
 ```text
 .build/release-package/MacTR.app
-dist/v1.4.1/MacTR-v1.4.1-macos-arm64.dmg
-dist/v1.4.1/MacTR-v1.4.1-macos-arm64.zip
-dist/v1.4.1/SHA256SUMS.txt
+dist/v1.4.4/MacTR-v1.4.4-macos-arm64.dmg
+dist/v1.4.4/MacTR-v1.4.4-macos-arm64.zip
+dist/v1.4.4/SHA256SUMS.txt
 ```
 
 ### 4. 验证产物
@@ -187,9 +187,9 @@ codesign --verify --deep --strict --verbose=2 \
 
 otool -L .build/release-package/MacTR.app/Contents/MacOS/MacTR
 
-cd dist/v1.4.1
+cd dist/v1.4.4
 shasum -a 256 -c SHA256SUMS.txt
-hdiutil verify MacTR-v1.4.1-macos-arm64.dmg
+hdiutil verify MacTR-v1.4.4-macos-arm64.dmg
 ```
 
 `otool -L` 的结果中不应出现 `/opt/homebrew`、`.build` 或开发机绝对路径。

@@ -177,7 +177,11 @@ chmod +x packaging/build-release.sh
 dist/v1.4.4/MacTR-v1.4.4-macos-arm64.dmg
 dist/v1.4.4/MacTR-v1.4.4-macos-arm64.zip
 dist/v1.4.4/SHA256SUMS.txt
+dist/v1.4.4/AppIcon.icns
+dist/v1.4.4/app-icon.png
 ```
+
+`dist/` 下前三项是分发产物,后两项是打包过程中生成的图标副本。
 
 ### 4. 验证产物
 

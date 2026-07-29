@@ -208,7 +208,12 @@ Main outputs:
 dist/v1.4.4/MacTR-v1.4.4-macos-arm64.dmg
 dist/v1.4.4/MacTR-v1.4.4-macos-arm64.zip
 dist/v1.4.4/SHA256SUMS.txt
+dist/v1.4.4/AppIcon.icns
+dist/v1.4.4/app-icon.png
 ```
+
+Under `dist/`, the first three are the distributable artifacts; the last two are icon
+copies produced along the way.
 
 ### 4. Verify the packages
 

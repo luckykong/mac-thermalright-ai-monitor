@@ -220,6 +220,23 @@ final class SystemMetricsCollector: @unchecked Sendable {
     private var smcOpened = false
     private var smcLogOnce = true
     private var lastSMCOpenAttempt: Date?
+    /// Temperature keys discovered by enumerating the SMC, split by prefix.
+    /// nil until the first (one-time) scan runs. Empty arrays are a valid,
+    /// remembered result — they mean "scanned, found none", not "not scanned".
+    ///
+    /// The key's size/type is captured during the scan so steady-state reads
+    /// skip the kSMCGetKeyInfo round trip entirely. That descriptor is fixed
+    /// for the life of the connection, and re-fetching it per key per tick
+    /// doubled the syscall count for no new information.
+    private var smcCPUKeys: [SMCTempKey]?
+    private var smcGPUKeys: [SMCTempKey]?
+    /// Last die-temperature reading, reused between refreshes. Sweeping every
+    /// discovered sensor costs ~24 ms, and a die's temperature does not move
+    /// meaningfully inside one metrics tick, so the sweep runs on its own
+    /// slower cadence instead of on every collect.
+    private var cachedDieTemps: (cpu: Double?, gpu: Double?)?
+    private var lastDieTempRead = Date.distantPast
+    private static let dieTempInterval: TimeInterval = 4
 
     // MARK: - CPU
 
@@ -671,92 +688,202 @@ final class SystemMetricsCollector: @unchecked Sendable {
     // MARK: - Temperature (SMC)
 
     func collectTemperature() -> TemperatureSnapshot {
+        // Cheap and genuinely live, so it is never cached.
         let thermalState = ProcessInfo.processInfo.thermalState.rawValue
+
+        if let cached = cachedDieTemps,
+           Date().timeIntervalSince(lastDieTempRead) < Self.dieTempInterval {
+            return TemperatureSnapshot(cpuTemp: cached.cpu, gpuTemp: cached.gpu,
+                                       thermalState: thermalState)
+        }
 
         var cpuTemp: Double? = nil
         var gpuTemp: Double? = nil
 
-        // Primary: IOHIDEventSystemClient (works on all Apple Silicon without sudo)
-        var hidCpu: Double = -1
-        var hidGpu: Double = -1
-        readThermalSensors(&hidCpu, &hidGpu)
-        if hidCpu > 0 { cpuTemp = hidCpu }
-        if hidGpu > 0 { gpuTemp = hidGpu }
-        if smcLogOnce {
-            log("[Temp] HID: CPU=\(hidCpu > 0 ? String(format: "%.1f°C", hidCpu) : "N/A"), GPU=\(hidGpu > 0 ? String(format: "%.1f°C", hidGpu) : "N/A")")
+        // Primary: SMC, because it exposes the per-core die sensors.
+        //
+        // The IOHID path used to come first, but its `PMU tdie*` sensors are
+        // not the hot spot. Measured on this machine, idle vs eight busy
+        // threads: SMC `Tp*` 65.2 -> 111.8 °C while HID reported 54.1 -> 74.4.
+        // Reporting the cooler sensor as "the CPU temperature" understated the
+        // peak by up to 37 °C, which defeats the point of a thermal readout.
+        if !smcOpened { openSMC() }
+        if smcOpened {
+            discoverSMCTemperatureKeysIfNeeded()
+            cpuTemp = hottestSMCTemp(smcCPUKeys ?? [], label: "CPU")
+            gpuTemp = hottestSMCTemp(smcGPUKeys ?? [], label: "GPU")
         }
 
-        // Fallback: SMC keys (for Intel or if HID fails)
+        // Fallback: IOHIDEventSystemClient, for a machine where the SMC is
+        // unreachable or publishes none of these keys.
         if cpuTemp == nil || gpuTemp == nil {
-            if !smcOpened { openSMC() }
-        }
-
-        if smcOpened && (cpuTemp == nil || gpuTemp == nil) {
-            // Apple Silicon CPU temperature keys (M1/M1 Pro/M2/M3/M4/M5)
-            // Try all known keys — first valid reading wins
-            let cpuKeys = [
-                // M1/M1 Pro/M1 Max
-                "Tp09", "Tp0T", "Tp01", "Tp05", "Tp0D", "Tp0H", "Tp0L", "Tp0P",
-                // M2/M2 Pro/M2 Max
-                "Tp1h", "Tp1t", "Tp1p", "Tp1l", "Tp0X", "Tp0b", "Tp0f", "Tp0j",
-                // M3/M3 Pro
-                "Te05", "Te0L", "Te0P", "Tf04", "Tf09", "Tf0A", "Tf0D",
-                // M4
-                "Tp0V", "Tp0Y", "Tp0e",
-                // M5
-                "Tp00", "Tp04", "Tp08", "Tp0C",
-                // Intel fallback
-                "Tc0p", "Tc0c",
-            ]
-            // Average all valid CPU temp readings for accuracy (only if HID failed)
-            if cpuTemp == nil {
-                var cpuTemps: [(String, Double)] = []
-                for key in cpuKeys {
-                    if let t = readSMCTemp(key), t > 10 && t < 120 {
-                        cpuTemps.append((key, t))
-                    }
-                }
-                if !cpuTemps.isEmpty {
-                    cpuTemp = cpuTemps.map(\.1).reduce(0, +) / Double(cpuTemps.count)
-                    if smcLogOnce {
-                        log("[SMC] CPU temps: \(cpuTemps.map { "\($0.0)=\(String(format: "%.1f", $0.1))°C" }.joined(separator: ", "))")
-                    }
-                }
+            var hidCpu: Double = -1
+            var hidGpu: Double = -1
+            readThermalSensors(&hidCpu, &hidGpu)
+            if cpuTemp == nil, hidCpu > 0 { cpuTemp = hidCpu }
+            if gpuTemp == nil, hidGpu > 0 { gpuTemp = hidGpu }
+            if smcLogOnce {
+                log("[Temp] HID fallback: CPU=\(hidCpu > 0 ? String(format: "%.1f°C", hidCpu) : "N/A"), GPU=\(hidGpu > 0 ? String(format: "%.1f°C", hidGpu) : "N/A")")
             }
-
-            // GPU temperature keys
-            let gpuKeys = [
-                // M1/M1 Pro
-                "Tg05", "Tg0D", "Tg0L", "Tg0T",
-                // M2
-                "Tg0f", "Tg0j",
-                // M3
-                "Tf44", "Tf49", "Tf4A", "Tf4D",
-                // M4
-                "Tg0G", "Tg0H", "Tg1U", "Tg1k", "Tg0K",
-                // M5
-                "Tg0U", "Tg0X", "Tg0d", "Tg0g",
-                // Intel fallback
-                "Tg0p", "Tg0d",
-            ]
-            if gpuTemp == nil {
-                var gpuTemps: [(String, Double)] = []
-                for key in gpuKeys {
-                    if let t = readSMCTemp(key), t > 10 && t < 120 {
-                        gpuTemps.append((key, t))
-                    }
-                }
-                if !gpuTemps.isEmpty {
-                    gpuTemp = gpuTemps.map(\.1).reduce(0, +) / Double(gpuTemps.count)
-                    if smcLogOnce {
-                        log("[SMC] GPU temps: \(gpuTemps.map { "\($0.0)=\(String(format: "%.1f", $0.1))°C" }.joined(separator: ", "))")
-                    }
-                }
-            }
-            smcLogOnce = false
         }
+        smcLogOnce = false
 
+        cachedDieTemps = (cpuTemp, gpuTemp)
+        lastDieTempRead = Date()
         return TemperatureSnapshot(cpuTemp: cpuTemp, gpuTemp: gpuTemp, thermalState: thermalState)
+    }
+
+    // MARK: - SMC temperature discovery
+
+    /// Plausible range for a die temperature in °C. The lower bound also drops
+    /// the readings a power-gated core reports while it is parked — an idle
+    /// performance cluster returns a fixed placeholder, not a measurement.
+    private static let plausibleTempRange = 10.0...120.0
+
+    /// SMC types that carry a temperature: `flt ` on Apple Silicon, the sp
+    /// fixed-point pair on Intel. Every Tp/Te/Tg key on this machine is `flt `.
+    private static let temperatureDataTypes: Set<UInt32> = [
+        SMCNumberDecoder.fourCC("flt "),
+        SMCNumberDecoder.fourCC("sp78"),
+        SMCNumberDecoder.fourCC("sp87"),
+    ]
+
+    /// A discovered temperature key plus the descriptor needed to read it,
+    /// so the steady-state path is one IOConnectCall per key instead of two.
+    private struct SMCTempKey {
+        let name: String
+        let fourCC: UInt32
+        let dataSize: UInt32
+        let dataType: UInt32
+    }
+
+    /// Enumerate the SMC's key table once and keep the temperature keys that
+    /// belong to the CPU and GPU.
+    ///
+    /// This replaces a hardcoded list of guessed key names. That list was wrong
+    /// in both directions on this machine: `Tp01`, `Tp05`, `Tp0D`, `Tp1h`,
+    /// `Tp0V`, `Te0L`, `Tg0U` and `Tg0g` do not exist, while real sensors —
+    /// `Te04`, `Te06`, `Te0R`, `Tex0…3`, `Tg04`, `Tg0R`, `Tg0y`, `Tg1l` and
+    /// others — were never read. Which names a chip publishes varies per model,
+    /// so enumerating is the only approach that does not need a new hardcoded
+    /// list for every future SoC.
+    ///
+    /// Prefixes: `Tp`/`Te` are CPU performance/efficiency cores, `Tg` is GPU.
+    private func discoverSMCTemperatureKeysIfNeeded() {
+        guard smcCPUKeys == nil, smcOpened else { return }
+        var cpu: [SMCTempKey] = []
+        var gpu: [SMCTempKey] = []
+        defer {
+            // Assigned even when empty so the scan is not repeated every tick.
+            smcCPUKeys = cpu
+            smcGPUKeys = gpu
+            log("[SMC] Discovered \(cpu.count) CPU and \(gpu.count) GPU"
+                + " temperature keys")
+        }
+
+        guard let count = readSMCKeyCount() else { return }
+        for index in 0..<count {
+            guard let key = readSMCKey(at: index) else { continue }
+            let isCPU = key.hasPrefix("Tp") || key.hasPrefix("Te")
+            let isGPU = key.hasPrefix("Tg")
+            guard isCPU || isGPU else { continue }
+            // Filter on DATA TYPE, never on the value read right now. A parked
+            // core reports a placeholder until it wakes, so screening by value
+            // at scan time would permanently discard whichever cores happened
+            // to be idle during startup — on this machine that was 103 keys
+            // kept out of 134. The type check still excludes a same-prefix key
+            // holding something that is not a temperature.
+            guard let info = readSMCKeyInfo(key),
+                  Self.temperatureDataTypes.contains(info.dataType)
+            else { continue }
+            let entry = SMCTempKey(name: key, fourCC: fourCC(key),
+                                   dataSize: info.dataSize,
+                                   dataType: info.dataType)
+            if isCPU { cpu.append(entry) } else { gpu.append(entry) }
+        }
+    }
+
+    /// Hottest of the given keys — the reading that matters for thermal
+    /// headroom. Averaging instead would fold in every parked core sitting at
+    /// its placeholder value and drag the number well below the real peak.
+    private func hottestSMCTemp(_ keys: [SMCTempKey], label: String) -> Double? {
+        var hottest: (name: String, value: Double)?
+        var readable = 0
+        for key in keys {
+            guard let t = readDiscoveredSMCTemp(key),
+                  Self.plausibleTempRange.contains(t)
+            else { continue }
+            readable += 1
+            if hottest == nil || t > hottest!.value { hottest = (key.name, t) }
+        }
+        guard let hottest else { return nil }
+        if smcLogOnce {
+            log("[SMC] \(label) hottest \(hottest.name)="
+                + String(format: "%.1f°C", hottest.value)
+                + " — \(readable) of \(keys.count) sensors readable")
+        }
+        return hottest.value
+    }
+
+    /// Read a key whose descriptor is already known: one call, no key-info
+    /// round trip. A parked core simply fails to answer and is skipped.
+    private func readDiscoveredSMCTemp(_ key: SMCTempKey) -> Double? {
+        guard smcOpened else { return nil }
+        var input = SMCKeyData_t()
+        var output = SMCKeyData_t()
+        input.key = key.fourCC
+        input.keyInfo.dataSize = key.dataSize
+        input.data8 = 5  // kSMCReadKey
+        guard smcCall(&input, &output) == KERN_SUCCESS else { return nil }
+        var tuple = output.bytes
+        let size = min(Int(key.dataSize), 32)
+        let bytes = withUnsafeBytes(of: &tuple) { Array($0.prefix(size)) }
+        #if arch(arm64)
+        let floatLittleEndian = true
+        #else
+        let floatLittleEndian = false
+        #endif
+        return SMCNumberDecoder.decode(
+            dataType: key.dataType, bytes: bytes,
+            floatLittleEndian: floatLittleEndian)
+    }
+
+    /// The size/type descriptor for a key, without reading its value.
+    private func readSMCKeyInfo(_ key: String) -> (dataSize: UInt32, dataType: UInt32)? {
+        guard smcOpened else { return nil }
+        var input = SMCKeyData_t()
+        var output = SMCKeyData_t()
+        input.key = fourCC(key)
+        input.data8 = 9  // kSMCGetKeyInfo
+        guard smcCall(&input, &output) == KERN_SUCCESS else { return nil }
+        return (output.keyInfo.dataSize, output.keyInfo.dataType)
+    }
+
+    /// Number of keys in the SMC's table, from the `#KEY` pseudo-key.
+    private func readSMCKeyCount() -> Int? {
+        guard let value = readSMCValue("#KEY"), value.bytes.count >= 4 else {
+            return nil
+        }
+        let b = value.bytes
+        return Int(UInt32(b[0]) << 24 | UInt32(b[1]) << 16
+            | UInt32(b[2]) << 8 | UInt32(b[3]))
+    }
+
+    /// The key name at `index` in the SMC's table.
+    private func readSMCKey(at index: Int) -> String? {
+        guard smcOpened else { return nil }
+        var input = SMCKeyData_t()
+        var output = SMCKeyData_t()
+        input.data8 = 8  // kSMCGetKeyFromIndex
+        input.data32 = UInt32(index)
+        guard smcCall(&input, &output) == KERN_SUCCESS, output.key != 0 else {
+            return nil
+        }
+        let k = output.key
+        let chars = [UInt8((k >> 24) & 0xff), UInt8((k >> 16) & 0xff),
+                     UInt8((k >> 8) & 0xff), UInt8(k & 0xff)]
+        guard chars.allSatisfy({ $0 >= 0x20 && $0 < 0x7f }) else { return nil }
+        return String(bytes: chars, encoding: .ascii)
     }
 
     // MARK: - SMC Helpers

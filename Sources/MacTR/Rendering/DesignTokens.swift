@@ -39,6 +39,16 @@ enum Color {
         pct < 50 ? green : (pct < 75 ? orange : red)
     }
 
+    /// Colour for a die temperature in °C.
+    ///
+    /// Banded for a HOTTEST-core reading, not an average. Apple Silicon runs a
+    /// busy core in the 90s and throttles around 110, so the old 50/65 split —
+    /// written when the value came from a cooler averaged sensor — would sit on
+    /// red permanently and stop carrying information.
+    static func forTemperature(_ celsius: Double) -> CGColor {
+        celsius > 90 ? red : (celsius > 70 ? orange : green)
+    }
+
     /// Color by macOS memory pressure level (1=normal, 2=warn, 4=critical).
     /// Severity comes from pressure, not from used% — a Mac using RAM as cache is not "in danger".
     static func forPressure(_ level: Int) -> CGColor {

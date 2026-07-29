@@ -30,7 +30,7 @@ than a decision baked into the collector.
 
 ## Highlights
 
-- **Settings → Display → Agent Token Usage → "Count cached-read tokens."** Defaults to
+- **Settings → Display → Agent Token Usage → "Count cached-read tokens"**. Defaults to
   on, which is byte-for-byte the previous behaviour — an upgrade does not silently
   redefine the number you have been watching.
 - **The panel states its unit.** With cache reads excluded, a `不含缓存` / `NO CACHE`

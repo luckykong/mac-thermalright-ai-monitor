@@ -426,19 +426,19 @@ extension MonitorRenderer {
                     : "\(hours)h \(minutes)m"
             }
             // Two centered lines instead of one combined "UP 3h 42m · 128
-            // PROCS" string. Squeezed onto a single row it had to run at 10pt
-            // to fit the card's 190pt width, which was unreadable on the
-            // physical 1920x480 panel; splitting lets both readings run at
-            // 13pt with room to spare.
-            let statFont = Fonts.system(13, weight: .semibold)
+            // PROCS" string. Was 13pt/textS — still read as barely-there
+            // grey text next to the clock's bright 43pt digits. Bumped to
+            // 16pt and to textW (the same brightness as the clock) so it
+            // reads as a real line, not a caption.
+            let statFont = Fonts.system(16, weight: .semibold)
             Draw.centeredText(
                 ctx, AppLocalization.format(.uptimeLine, language: language, uptime),
-                cx: x + w / 2, y: y + 100,
-                font: statFont, color: Color.textS)
+                cx: x + w / 2, y: y + 102,
+                font: statFont, color: Color.textW)
             Draw.centeredText(
                 ctx, AppLocalization.format(.processLine, language: language, sys.processCount),
-                cx: x + w / 2, y: y + 118,
-                font: statFont, color: Color.textS)
+                cx: x + w / 2, y: y + 123,
+                font: statFont, color: Color.textW)
         }
 
         let fanLabel: String
@@ -469,17 +469,18 @@ extension MonitorRenderer {
         }
 
         let t = now.timeIntervalSince1970
-        // Was 12pt — too small to read at a glance on the physical 1920x480
-        // panel. The two-line uptime/process block above now ends around
-        // y+131, so fanTextY moves down slightly to keep even spacing.
-        let fanFont = Fonts.system(14, weight: .semibold)
-        let fanTextY = y + 148
+        // Was 14pt, then 12pt before that — still too small at a glance on
+        // the physical 1920x480 panel. Bumped to 17pt, the same size as the
+        // CPU/GPU cards' bold value text (e.g. CPU temperature), since the
+        // RPM reading deserves the same weight as those primary numbers.
+        let fanFont = Fonts.system(17, weight: .bold)
+        let fanTextY = y + 152
         if showFanRotor {
             // Treat the rotor and RPM as one centered status row. This keeps the
             // animation visually tied to its value and leaves clean air above
             // Bongo Cat instead of making the rotor look like part of its head.
-            let rotorFootprint: CGFloat = 23
-            let rotorTextGap: CGFloat = 8
+            let rotorFootprint: CGFloat = 26
+            let rotorTextGap: CGFloat = 9
             let labelWidth = TextMetrics.width(of: fanLabel, font: fanFont)
             let rowWidth = rotorFootprint + rotorTextGap + labelWidth
             let rowX = CGFloat(x) + (CGFloat(w) - rowWidth) / 2
@@ -487,8 +488,8 @@ extension MonitorRenderer {
                 ctx,
                 center: CGPoint(
                     x: rowX + rotorFootprint / 2,
-                    y: CGFloat(fanTextY) + 9),
-                radius: 9.5,
+                    y: CGFloat(fanTextY) + 10),
+                radius: 11,
                 angle: CGFloat(t * fanTurnsPerSecond * 2 * .pi),
                 color: fanColor,
                 available: true)

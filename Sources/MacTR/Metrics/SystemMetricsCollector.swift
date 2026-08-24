@@ -80,6 +80,28 @@ enum NetworkRateCalculator {
     }
 }
 
+enum NetworkInterfaceFilter {
+    /// True for macOS's physical Wi-Fi/Ethernet adapter naming convention:
+    /// `en` immediately followed by a digit (`en0`, `en1`, ... — including
+    /// USB/Thunderbolt Ethernet dongles). These are the only interfaces
+    /// whose bytes reflect traffic that actually crossed the wire/air.
+    /// False for utun (VPN/proxy tunnels), bridge (Thunderbolt Bridge),
+    /// awdl/llw (AirDrop/Handoff), ipsec, ppp, gif, stf, and anything else
+    /// — including a hypothetical `enc*`-style interface that merely starts
+    /// with the same two letters.
+    ///
+    /// Takes the raw name buffer from `if_indextoname` rather than a String:
+    /// this runs once per interface on every metrics tick, in the hot
+    /// `collectNetwork()` path, so it avoids a bridging allocation there.
+    static func isPhysical(_ nameBuffer: [CChar]) -> Bool {
+        guard nameBuffer.count >= 3 else { return false }
+        let digits = CChar(UInt8(ascii: "0"))...CChar(UInt8(ascii: "9"))
+        return nameBuffer[0] == CChar(UInt8(ascii: "e"))
+            && nameBuffer[1] == CChar(UInt8(ascii: "n"))
+            && digits.contains(nameBuffer[2])
+    }
+}
+
 enum SMCNumberDecoder {
     static func fourCC(_ string: String) -> UInt32 {
         string.utf8.reduce(0) { ($0 << 8) | UInt32($1) }
@@ -592,14 +614,10 @@ final class SystemMetricsCollector: @unchecked Sendable {
         return result
     }
 
-    /// True for built-in Wi-Fi and Ethernet adapters (en0, en1, ...), including
-    /// USB/Thunderbolt Ethernet dongles — macOS names every physical network
-    /// adapter `enN`. False for VPN/proxy tunnels and other virtual interfaces.
     private func isPhysicalInterface(index: UInt16) -> Bool {
         var nameBuffer = [CChar](repeating: 0, count: Int(IFNAMSIZ))
         guard if_indextoname(UInt32(index), &nameBuffer) != nil else { return false }
-        return nameBuffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
-            .hasPrefix("en")
+        return NetworkInterfaceFilter.isPhysical(nameBuffer)
     }
 
     // MARK: - Disk I/O (IOKit disk stats)

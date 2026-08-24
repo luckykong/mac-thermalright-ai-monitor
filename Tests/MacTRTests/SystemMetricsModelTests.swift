@@ -44,6 +44,27 @@ struct SystemMetricsModelTests {
         #expect(delta.tx == 500)
     }
 
+    @Test("Physical interface filter accepts en<N> only, not virtual interfaces")
+    func physicalInterfaceNames() {
+        func bytes(_ value: String) -> [CChar] { Array(value.utf8CString) }
+
+        for physical in ["en0", "en1", "en2", "en15"] {
+            #expect(
+                NetworkInterfaceFilter.isPhysical(bytes(physical)),
+                "\(physical) should be treated as a physical interface")
+        }
+
+        let virtual = [
+            "lo0", "utun0", "utun3", "bridge0", "bridge100", "awdl0", "llw0",
+            "ipsec0", "ppp0", "gif0", "stf0", "en", "enc0", "",
+        ]
+        for name in virtual {
+            #expect(
+                !NetworkInterfaceFilter.isPhysical(bytes(name)),
+                "\(name) should not be treated as a physical interface")
+        }
+    }
+
     @Test("Network display changes band above 5 and 10 MB per second")
     func networkRateBands() {
         #expect(Color.networkRateBand(0) == .normal)

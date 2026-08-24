@@ -539,7 +539,18 @@ final class SystemMetricsCollector: @unchecked Sendable {
             txBytesPerSec: txPerSec)
     }
 
-    /// Read 64-bit counters for every non-loopback interface via NET_RT_IFLIST2.
+    /// Read 64-bit counters for every physical Wi-Fi/Ethernet interface via
+    /// NET_RT_IFLIST2.
+    ///
+    /// Deliberately restricted to `en*` adapters. A system-wide VPN or proxy
+    /// tunnel (e.g. Clash's TUN mode) creates a `utun` interface and routes
+    /// app traffic through it; the tunnel process then re-emits that same
+    /// traffic on the real physical adapter to reach the internet. Summing
+    /// every UP interface (the old behaviour) counted both legs and roughly
+    /// doubled the reported rate. Only `en*` bytes reflect what actually
+    /// crossed the wire/air, so everything else — utun, bridge (Thunderbolt
+    /// Bridge), awdl/llw (AirDrop/Handoff), ipsec, ppp, gif, stf, lo0 — is
+    /// excluded.
     private func sysctlNetworkBytesByInterface() -> [Int: NetworkInterfaceBytes]? {
         var mib: [Int32] = [CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, 0]
         var len: Int = 0
@@ -569,7 +580,7 @@ final class SystemMetricsCollector: @unchecked Sendable {
                 }
                 let data = header.ifm_data
                 let isUp = (header.ifm_flags & IFF_UP) != 0
-                if data.ifi_type != 24 && isUp {  // IFT_LOOP
+                if data.ifi_type != 24 && isUp, isPhysicalInterface(index: header.ifm_index) {  // IFT_LOOP
                     result[Int(header.ifm_index)] = NetworkInterfaceBytes(
                         rx: data.ifi_ibytes,
                         tx: data.ifi_obytes)
@@ -579,6 +590,16 @@ final class SystemMetricsCollector: @unchecked Sendable {
             offset += msgLen
         }
         return result
+    }
+
+    /// True for built-in Wi-Fi and Ethernet adapters (en0, en1, ...), including
+    /// USB/Thunderbolt Ethernet dongles — macOS names every physical network
+    /// adapter `enN`. False for VPN/proxy tunnels and other virtual interfaces.
+    private func isPhysicalInterface(index: UInt16) -> Bool {
+        var nameBuffer = [CChar](repeating: 0, count: Int(IFNAMSIZ))
+        guard if_indextoname(UInt32(index), &nameBuffer) != nil else { return false }
+        return nameBuffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+            .hasPrefix("en")
     }
 
     // MARK: - Disk I/O (IOKit disk stats)

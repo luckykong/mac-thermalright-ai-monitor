@@ -425,12 +425,20 @@ extension MonitorRenderer {
                     ? "\(hours / 24)d \(hours % 24)h"
                     : "\(hours)h \(minutes)m"
             }
-            let summary = AppLocalization.format(
-                .uptimeSummary, language: language, uptime, sys.processCount)
-            Draw.centeredText(ctx, summary,
-                              cx: x + w / 2, y: y + 108,
-                              font: Fonts.system(10, weight: .medium),
-                              color: Color.textL)
+            // Two centered lines instead of one combined "UP 3h 42m · 128
+            // PROCS" string. Squeezed onto a single row it had to run at 10pt
+            // to fit the card's 190pt width, which was unreadable on the
+            // physical 1920x480 panel; splitting lets both readings run at
+            // 13pt with room to spare.
+            let statFont = Fonts.system(13, weight: .semibold)
+            Draw.centeredText(
+                ctx, AppLocalization.format(.uptimeLine, language: language, uptime),
+                cx: x + w / 2, y: y + 100,
+                font: statFont, color: Color.textS)
+            Draw.centeredText(
+                ctx, AppLocalization.format(.processLine, language: language, sys.processCount),
+                cx: x + w / 2, y: y + 118,
+                font: statFont, color: Color.textS)
         }
 
         let fanLabel: String
@@ -461,14 +469,17 @@ extension MonitorRenderer {
         }
 
         let t = now.timeIntervalSince1970
-        let fanFont = Fonts.system(12, weight: .semibold)
-        let fanTextY = y + 142
+        // Was 12pt — too small to read at a glance on the physical 1920x480
+        // panel. The two-line uptime/process block above now ends around
+        // y+131, so fanTextY moves down slightly to keep even spacing.
+        let fanFont = Fonts.system(14, weight: .semibold)
+        let fanTextY = y + 148
         if showFanRotor {
             // Treat the rotor and RPM as one centered status row. This keeps the
             // animation visually tied to its value and leaves clean air above
             // Bongo Cat instead of making the rotor look like part of its head.
-            let rotorFootprint: CGFloat = 20
-            let rotorTextGap: CGFloat = 7
+            let rotorFootprint: CGFloat = 23
+            let rotorTextGap: CGFloat = 8
             let labelWidth = TextMetrics.width(of: fanLabel, font: fanFont)
             let rowWidth = rotorFootprint + rotorTextGap + labelWidth
             let rowX = CGFloat(x) + (CGFloat(w) - rowWidth) / 2
@@ -476,8 +487,8 @@ extension MonitorRenderer {
                 ctx,
                 center: CGPoint(
                     x: rowX + rotorFootprint / 2,
-                    y: CGFloat(fanTextY) + 8),
-                radius: 8,
+                    y: CGFloat(fanTextY) + 9),
+                radius: 9.5,
                 angle: CGFloat(t * fanTurnsPerSecond * 2 * .pi),
                 color: fanColor,
                 available: true)

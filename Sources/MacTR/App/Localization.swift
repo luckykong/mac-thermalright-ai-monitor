@@ -211,7 +211,8 @@ enum L10nKey: CaseIterable, Sendable {
     case lastRun
     case fanless
     case fanUnavailable
-    case uptimeSummary
+    case uptimeLine
+    case processLine
     case aiAgents
     case notFound
     case now
@@ -466,7 +467,9 @@ enum AppLocalization {
         .lastRun: Pair(zhHans: "上次 %@", english: "LAST %@"),
         .fanless: Pair(zhHans: "无风扇", english: "FANLESS"),
         .fanUnavailable: Pair(zhHans: "风扇 N/A", english: "FAN N/A"),
-        .uptimeSummary: Pair(zhHans: "运行 %@ · %d 个进程", english: "UP %@ · %d PROCS"),
+        // Two lines instead of one combined string — see renderClockAndFan.
+        .uptimeLine: Pair(zhHans: "运行 %@", english: "UP %@"),
+        .processLine: Pair(zhHans: "%d 个进程", english: "%d PROCS"),
         .aiAgents: Pair(zhHans: "AI 助手", english: "AI AGENTS"),
         .notFound: Pair(zhHans: "未找到", english: "not found"),
         .now: Pair(zhHans: "刚刚", english: "now"),

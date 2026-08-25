@@ -82,7 +82,9 @@ enum AgentTokenSplit {
 // MARK: - Data Structures
 
 /// One rate-limit window: how much of it is spent and when it rolls over.
-/// Codex reports a single window; Claude has both a 5-hour and a 7-day one.
+/// Both Claude and Codex can report a 5-hour and a 7-day window at once,
+/// though Codex sometimes reports only one — e.g. while its 5-hour cap is
+/// suspended, only the 7-day figure is populated.
 struct QuotaWindow: Sendable, Equatable {
     /// Short, language-neutral name rendered beside the percentage ("5h", "7d").
     let label: String
@@ -102,6 +104,34 @@ struct QuotaWindow: Sendable, Equatable {
         if minutes >= 1440, minutes % 1440 == 0 { return "\(minutes / 1440)d" }
         if minutes >= 60, minutes % 60 == 0 { return "\(minutes / 60)h" }
         return "\(minutes)m"
+    }
+
+    /// Parses one Codex `primary`/`secondary` rate-limit block. `window_minutes`
+    /// is required — it is both the label source and the sort key
+    /// `codexWindows(from:)` uses to order windows shortest-first — so a block
+    /// missing it is dropped rather than shown unlabeled.
+    static func fromCodexBlock(_ block: [String: Any]) -> (minutes: Int, window: QuotaWindow)? {
+        guard let used = (block["used_percent"] as? NSNumber)?.doubleValue,
+              let minutes = (block["window_minutes"] as? NSNumber)?.intValue
+        else { return nil }
+        let resets = (block["resets_at"] as? NSNumber)
+            .map { Date(timeIntervalSince1970: $0.doubleValue) }
+        return (minutes, QuotaWindow(
+            label: label(minutes: minutes), usedPercent: used, resetsAt: resets))
+    }
+
+    /// Parses a Codex `rate_limits` object into its windows, ordered
+    /// shortest-first (5h before 7d) regardless of which JSON key — `primary`
+    /// or `secondary` — reported which duration. Codex has been observed
+    /// flipping this depending on which caps are active on the account: while
+    /// the 5-hour cap was suspended, `primary` reported the 7-day figure
+    /// alone and `secondary` was absent.
+    static func codexWindows(from rateLimits: [String: Any]) -> [QuotaWindow] {
+        ["primary", "secondary"]
+            .compactMap { rateLimits[$0] as? [String: Any] }
+            .compactMap(fromCodexBlock)
+            .sorted { $0.minutes < $1.minutes }
+            .map(\.window)
     }
 }
 
@@ -209,7 +239,9 @@ final class AgentUsageCollector: @unchecked Sendable {
     // Last-known Codex quota (account-global). The full rate-limit block appears only
     // occasionally and the newest reading may be in a different file than the active
     // one, so we track the newest-by-timestamp across recent files and cache it.
-    private var codexQuotaCache: QuotaWindow?
+    // Codex reports up to two windows (`primary`/`secondary`, keyed here by their
+    // own window_minutes rather than that JSON key — see updateCodexQuota).
+    private var codexQuotaCache: [QuotaWindow] = []
     private var codexQuotaTS = ""            // newest reading's timestamp seen so far
     private var codexQuotaLastScan: Date?
 
@@ -568,7 +600,7 @@ final class AgentUsageCollector: @unchecked Sendable {
         var project: String?
         var activity: String?
         var secondsAgo: Int?
-        let quotaWindows = codexQuotaCache.map { [$0] } ?? []
+        let quotaWindows = codexQuotaCache
         var attention = false
         var working = false
         var step: (current: Int, total: Int, text: String)?
@@ -666,14 +698,14 @@ final class AgentUsageCollector: @unchecked Sendable {
     }
 
     /// Refresh the cached quota from the NEWEST full rate-limit reading across recent
-    /// session files (by timestamp). Codex emits the populated `primary` block only
+    /// session files (by timestamp). Codex emits the populated `rate_limits` block only
     /// occasionally and the freshest one can be in a different file than the active
     /// session, so a single-file tail scan is unreliable. Throttled since it changes
-    /// slowly; lines without a populated primary don't contain "used_percent" and are
+    /// slowly; lines without a populated block don't contain "used_percent" and are
     /// rejected cheaply, so the reversed scan stops at each file's newest reading fast.
     private func updateCodexQuota() {
         if let last = codexQuotaLastScan, Date().timeIntervalSince(last) < 60,
-           codexQuotaCache != nil { return }
+           !codexQuotaCache.isEmpty { return }
         codexQuotaLastScan = Date()
 
         let root = home + "/.codex/sessions"
@@ -698,21 +730,13 @@ final class AgentUsageCollector: @unchecked Sendable {
                     let obj = parseJSON(line),
                     let ts = obj["timestamp"] as? String,
                     let payload = obj["payload"] as? [String: Any],
-                    let limits = payload["rate_limits"] as? [String: Any],
-                    let primary = limits["primary"] as? [String: Any],
-                    let used = (primary["used_percent"] as? NSNumber)?.doubleValue
+                    let limits = payload["rate_limits"] as? [String: Any]
                 else { continue }
                 if ts > codexQuotaTS {
+                    let windows = QuotaWindow.codexWindows(from: limits)
+                    guard !windows.isEmpty else { continue }
                     codexQuotaTS = ts
-                    var resets: Date?
-                    if let r = (primary["resets_at"] as? NSNumber)?.doubleValue {
-                        resets = Date(timeIntervalSince1970: r)
-                    }
-                    let minutes = (primary["window_minutes"] as? NSNumber)?.intValue
-                    codexQuotaCache = QuotaWindow(
-                        label: minutes.map(QuotaWindow.label(minutes:)) ?? "",
-                        usedPercent: used,
-                        resetsAt: resets)
+                    codexQuotaCache = windows
                 }
             }
         }

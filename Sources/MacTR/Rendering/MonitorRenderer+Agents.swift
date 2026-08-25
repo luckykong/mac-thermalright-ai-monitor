@@ -187,10 +187,10 @@ extension MonitorRenderer {
                       font: ioFont, color: Color.textL)
         }
 
-        // Rate-limit windows. Codex reports one and it spans the column; Claude
-        // has both a 5-hour and a 7-day window, which split the width. Side by
-        // side rather than stacked because the bar already sits ~12 px above
-        // the bottom of the panel — there is no room for a second row.
+        // Rate-limit windows, laid out side by side rather than stacked because
+        // the bar already sits ~12 px above the bottom of the panel — there is
+        // no room for a second row. Usually two (5-hour and 7-day, for both
+        // Claude and Codex), which split the width; a single window spans it.
         let quotaWindows = usage.quotaWindows
         if !quotaWindows.isEmpty {
             let qy = tokY + 78

@@ -1,8 +1,9 @@
 // ClaudeUsageFetcher.swift — Claude rate-limit windows from Anthropic's
 // OAuth usage endpoint
 //
-// Codex records `rate_limits.primary` on every rollout line, so its quota falls
-// out of transcripts MacTR already reads. Claude Code persists nothing
+// Codex records `rate_limits.primary`/`secondary` on every rollout line, so
+// its quota falls out of transcripts MacTR already reads (see
+// AgentUsageCollector.updateCodexQuota). Claude Code persists nothing
 // comparable — not in ~/.claude/projects, not in stats-cache.json, nowhere on
 // disk. Asking the API is the only way to get it.
 //

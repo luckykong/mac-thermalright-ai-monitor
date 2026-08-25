@@ -27,7 +27,7 @@
 - **当前项目**和**它最后说的话** —— 消息里的 Markdown 表格会被渲染成对齐的表格,而不是原始的 `| … |` 文本。
 - **计划 / 步骤进度** —— `步骤 4/6` 徽章 + 分段进度条,从 Codex 的 `update_plan` 和 Claude 的 `TodoWrite` 解析而来。上一轮已完成的旧计划会自动消失。
 - **今日 Token 用量** —— 总量 + In/Out,用简洁的 `万 / 亿` 格式。是否把命中提示词缓存、被重复读取的上下文算进去,可在设置里自行选择(见下)。
-- **剩余额度** —— 剩余百分比 + 重置倒计时。Codex 直接从会话日志里的 `rate_limits` 读取;Claude 需要额外配置一个缓存文件(见下),配好后会并排显示 5 小时与 7 天两个窗口。
+- **剩余额度** —— 剩余百分比 + 重置倒计时,5 小时与 7 天两个窗口并排显示。Codex 直接从会话日志里的 `rate_limits` 读取;Claude 需要额外配置一个缓存文件(见下)。
 - **实时状态** —— agent 工作时该栏**缓慢呼吸**,完成一轮或需要你输入时**闪烁**约 10 秒提醒。
 
 ### 🖥️ 系统面板
@@ -277,8 +277,9 @@ Token 总量按本地自然日统计;某个 agent 今天还没跑过时,面板�
 
 ### Claude 剩余额度:唯一的一次联网
 
-Codex 把 `rate_limits.primary`(已用百分比 + 重置时间)写进**每一条** rollout 日志,
-所以 MacTR 顺手就能读到。Claude Code 不把限额信息写到磁盘任何地方 ——
+Codex 把 `rate_limits.primary`/`secondary`(已用百分比 + 重置时间,通常分别对应
+5 小时和 7 天窗口,哪个键对应哪个时长会随账号当前生效的额度类型变化)写进
+**每一条** rollout 日志,所以 MacTR 顺手就能读到。Claude Code 不把限额信息写到磁盘任何地方 ——
 `~/.claude/projects`、`stats-cache.json`、`sessions/` 里都没有。唯一的来源就是
 带 OAuth token 请求 `https://api.anthropic.com/api/oauth/usage`。
 

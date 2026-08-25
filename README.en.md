@@ -35,9 +35,9 @@ for each agent, side by side:
 - **Today's token usage** — total + In/Out, using compact `万 / 亿` in Chinese and
   K / M / B in English. Whether context re-read from the prompt cache counts toward the
   total is your choice (see below).
-- **Remaining quota** — % left + reset countdown. Codex comes straight from `rate_limits`
-  in its session logs; Claude shows its 5-hour and 7-day windows side by side, from the
-  one network request described below.
+- **Remaining quota** — % left + reset countdown, with the 5-hour and 7-day windows shown
+  side by side. Codex comes straight from `rate_limits` in its session logs; Claude's
+  comes from the one network request described below.
 - **Live status** — the column **breathes** while an agent is working and **flashes** for
   ~10 s when it finishes a turn or needs your input.
 
@@ -316,8 +316,10 @@ unmarked — an unbadged card means exactly what it did before this setting exis
 
 ### Claude quota: the one network request
 
-Codex writes `rate_limits.primary` (percent used + reset time) into **every** rollout
-line, so MacTR gets its quota for free. Claude Code persists no such thing anywhere on
+Codex writes `rate_limits.primary`/`secondary` (percent used + reset time — usually the
+5-hour and 7-day windows respectively, though which key reports which duration moves with
+whatever caps are currently active on the account) into **every** rollout line, so MacTR
+gets its quota for free. Claude Code persists no such thing anywhere on
 disk — not in `~/.claude/projects`, `stats-cache.json` or `sessions/`. The only source is
 an authenticated `GET https://api.anthropic.com/api/oauth/usage`.
 

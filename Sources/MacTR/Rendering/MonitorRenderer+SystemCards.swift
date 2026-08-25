@@ -426,10 +426,10 @@ extension MonitorRenderer {
                     : "\(hours)h \(minutes)m"
             }
             // Two centered lines instead of one combined "UP 3h 42m · 128
-            // PROCS" string. Was 13pt/textS — still read as barely-there
-            // grey text next to the clock's bright 43pt digits. Bumped to
-            // 16pt and to textW (the same brightness as the clock) so it
-            // reads as a real line, not a caption.
+            // PROCS" string. Was 10pt/textL, then 13pt/textS — still read as
+            // barely-there grey text next to the clock's bright 43pt digits.
+            // Now 16pt/textW, the same brightness as the clock, so it reads
+            // as a real line, not a caption.
             let statFont = Fonts.system(16, weight: .semibold)
             Draw.centeredText(
                 ctx, AppLocalization.format(.uptimeLine, language: language, uptime),

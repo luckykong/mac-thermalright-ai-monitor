@@ -42,6 +42,8 @@ extension MonitorRenderer {
                 project: "dashboard",
                 activity: codexActivity,
                 quotaWindows: [
+                    QuotaWindow(label: "5h", usedPercent: 18,
+                                resetsAt: Date().addingTimeInterval(2 * 3600)),
                     QuotaWindow(label: "7d", usedPercent: 34,
                                 resetsAt: Date().addingTimeInterval(6 * 86400)),
                 ],
@@ -169,6 +171,9 @@ extension MonitorRenderer {
                               secondsSinceActive: 6, project: "web-service",
                               activity: codexActivity,
                               quotaWindows: [
+                                  QuotaWindow(
+                                      label: "5h", usedPercent: 29,
+                                      resetsAt: Date().addingTimeInterval(3600 * 3)),
                                   QuotaWindow(
                                       label: "7d", usedPercent: 57,
                                       resetsAt: Date().addingTimeInterval(3600 * 24 * 6)),

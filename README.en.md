@@ -319,7 +319,12 @@ unmarked — an unbadged card means exactly what it did before this setting exis
 Codex writes `rate_limits.primary`/`secondary` (percent used + reset time — usually the
 5-hour and 7-day windows respectively, though which key reports which duration moves with
 whatever caps are currently active on the account) into **every** rollout line, so MacTR
-gets its quota for free. Claude Code persists no such thing anywhere on
+gets its quota for free. The catch is that this reading is passive — it only updates while
+Codex is actually running, unlike Claude's active poll below. If the last reading's reset
+time has already passed (Codex idle longer than a 5-hour window, say), MacTR rolls it
+forward to the cycle that currently covers "now" using the window's known length and shows
+it at zero usage, rather than letting the bar disappear — the next real reading replaces
+that optimistic guess as soon as Codex runs again. Claude Code persists no such thing anywhere on
 disk — not in `~/.claude/projects`, `stats-cache.json` or `sessions/`. The only source is
 an authenticated `GET https://api.anthropic.com/api/oauth/usage`.
 

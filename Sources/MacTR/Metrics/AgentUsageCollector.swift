@@ -90,6 +90,18 @@ struct QuotaWindow: Sendable, Equatable {
     let label: String
     let usedPercent: Double
     let resetsAt: Date?
+    /// The window's length, when known — lets `rolledForward(now:)` project a
+    /// stale reading past its boundary. nil for windows that never need
+    /// projecting (currently: Claude's, which come from a live poll instead of
+    /// an opportunistic transcript read — see `ClaudeUsageFetcher`).
+    let windowMinutes: Int?
+
+    init(label: String, usedPercent: Double, resetsAt: Date?, windowMinutes: Int? = nil) {
+        self.label = label
+        self.usedPercent = usedPercent
+        self.resetsAt = resetsAt
+        self.windowMinutes = windowMinutes
+    }
 
     /// A window whose reset time has already passed is provably stale — the
     /// real utilisation rolled over to near zero — so it is dropped rather
@@ -117,7 +129,8 @@ struct QuotaWindow: Sendable, Equatable {
         let resets = (block["resets_at"] as? NSNumber)
             .map { Date(timeIntervalSince1970: $0.doubleValue) }
         return (minutes, QuotaWindow(
-            label: label(minutes: minutes), usedPercent: used, resetsAt: resets))
+            label: label(minutes: minutes), usedPercent: used, resetsAt: resets,
+            windowMinutes: minutes))
     }
 
     /// Parses a Codex `rate_limits` object into its windows, ordered
@@ -132,6 +145,25 @@ struct QuotaWindow: Sendable, Equatable {
             .compactMap(fromCodexBlock)
             .sorted { $0.minutes < $1.minutes }
             .map(\.window)
+    }
+
+    /// Once `resetsAt` has passed, projects forward to the rolling-window
+    /// boundary that currently covers `now` and assumes zero usage in it,
+    /// instead of going stale. Codex's quota is only observed when it
+    /// actually runs (see `AgentUsageCollector.updateCodexQuota`) — without
+    /// this, any idle stretch longer than the window's length would blank the
+    /// bar entirely rather than show the (very likely correct) empty quota.
+    /// A no-op when the window isn't expired or its length is unknown.
+    func rolledForward(now: Date = Date()) -> QuotaWindow {
+        guard let resetsAt, resetsAt < now,
+              let windowMinutes, windowMinutes > 0
+        else { return self }
+        let windowSeconds = TimeInterval(windowMinutes) * 60
+        let cycles = (now.timeIntervalSince(resetsAt) / windowSeconds).rounded(.up)
+        return QuotaWindow(
+            label: label, usedPercent: 0,
+            resetsAt: resetsAt.addingTimeInterval(cycles * windowSeconds),
+            windowMinutes: windowMinutes)
     }
 }
 
@@ -236,11 +268,13 @@ final class AgentUsageCollector: @unchecked Sendable {
     private var codexPrevAttention = false
     private var codexAttentionSince: Date?
 
-    // Last-known Codex quota (account-global). The full rate-limit block appears only
-    // occasionally and the newest reading may be in a different file than the active
-    // one, so we track the newest-by-timestamp across recent files and cache it.
-    // Codex reports up to two windows (`primary`/`secondary`, keyed here by their
-    // own window_minutes rather than that JSON key — see updateCodexQuota).
+    // Last-known Codex quota (account-global), as read — NOT projected forward;
+    // that happens per-tick in collectCodex via rolledForward(). The full
+    // rate-limit block appears only occasionally and the newest reading may be
+    // in a different file than the active one, so we track the newest-by-
+    // timestamp across recent files and cache it. Codex reports up to two
+    // windows (`primary`/`secondary`, keyed here by their own window_minutes
+    // rather than that JSON key — see updateCodexQuota).
     private var codexQuotaCache: [QuotaWindow] = []
     private var codexQuotaTS = ""            // newest reading's timestamp seen so far
     private var codexQuotaLastScan: Date?
@@ -600,7 +634,10 @@ final class AgentUsageCollector: @unchecked Sendable {
         var project: String?
         var activity: String?
         var secondsAgo: Int?
-        let quotaWindows = codexQuotaCache
+        // Re-projected on every tick (not just when the cache changes) so the
+        // 0%-and-counting-down display stays accurate as time passes between
+        // Codex runs, not just at the moment the last reading was cached.
+        let quotaWindows = codexQuotaCache.map { $0.rolledForward() }
         var attention = false
         var working = false
         var step: (current: Int, total: Int, text: String)?

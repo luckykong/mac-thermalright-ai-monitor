@@ -279,7 +279,11 @@ Token 总量按本地自然日统计;某个 agent 今天还没跑过时,面板�
 
 Codex 把 `rate_limits.primary`/`secondary`(已用百分比 + 重置时间,通常分别对应
 5 小时和 7 天窗口,哪个键对应哪个时长会随账号当前生效的额度类型变化)写进
-**每一条** rollout 日志,所以 MacTR 顺手就能读到。Claude Code 不把限额信息写到磁盘任何地方 ——
+**每一条** rollout 日志,所以 MacTR 顺手就能读到。但这也意味着 Codex 的额度是"被动"读到的 ——
+只有实际运行 Codex 才会更新,不像 Claude 那样主动轮询。如果最后一条读数的重置时间已经过去
+(比如 Codex 空闲超过了一个 5 小时窗口),MacTR 会按已知的窗口时长顺推到当前仍然有效的那个
+周期、并把已用百分比归零显示,而不是让额度条直接消失 —— 等 Codex 下次运行、拿到新读数后,
+这个乐观估算会立刻被真实数字替换。Claude Code 不把限额信息写到磁盘任何地方 ——
 `~/.claude/projects`、`stats-cache.json`、`sessions/` 里都没有。唯一的来源就是
 带 OAuth token 请求 `https://api.anthropic.com/api/oauth/usage`。
 

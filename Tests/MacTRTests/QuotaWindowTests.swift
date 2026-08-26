@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import MacTR
 
@@ -26,6 +27,7 @@ struct QuotaWindowTests {
         #expect(parsed?.window.label == "5h")
         #expect(parsed?.window.usedPercent == 0.0)
         #expect(parsed?.window.resetsAt == Date(timeIntervalSince1970: 1_787_691_728))
+        #expect(parsed?.window.windowMinutes == 300)
     }
 
     @Test("A block missing window_minutes is dropped rather than shown unlabeled")
@@ -74,5 +76,65 @@ struct QuotaWindowTests {
     func emptyRateLimits() {
         #expect(QuotaWindow.codexWindows(from: [:]).isEmpty)
         #expect(QuotaWindow.codexWindows(from: ["primary": "not a dictionary"]).isEmpty)
+    }
+
+    // MARK: - rolledForward
+
+    @Test("rolledForward leaves an unexpired window untouched")
+    func rolledForwardNoOpWhenFresh() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let window = QuotaWindow(
+            label: "5h", usedPercent: 42, resetsAt: now.addingTimeInterval(60),
+            windowMinutes: 300)
+        #expect(window.rolledForward(now: now) == window)
+    }
+
+    @Test("rolledForward leaves a window without a known length untouched")
+    func rolledForwardNoOpWithoutWindowMinutes() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        // Mirrors Claude's windows, which never carry windowMinutes.
+        let window = QuotaWindow(
+            label: "5h", usedPercent: 42, resetsAt: now.addingTimeInterval(-60))
+        #expect(window.rolledForward(now: now) == window)
+    }
+
+    @Test("rolledForward leaves a window without a reset time untouched")
+    func rolledForwardNoOpWithoutResetsAt() {
+        let window = QuotaWindow(
+            label: "7d", usedPercent: 12, resetsAt: nil, windowMinutes: 10_080)
+        #expect(window.rolledForward() == window)
+    }
+
+    /// The exact scenario this exists for: Codex idle well past its 5-hour
+    /// reset, no fresher reading available. Mirrors the real gap observed
+    /// 2026-08-26 (~13h41m idle against a 5h window) that inspired this fix.
+    @Test("An expired window snaps forward across multiple missed cycles, zeroed")
+    func rolledForwardMultipleCycles() {
+        let windowSeconds: TimeInterval = 300 * 60
+        let resetsAt = Date(timeIntervalSince1970: 1_000_000)
+        // Just past the boundary of the 3rd cycle after resetsAt.
+        let now = resetsAt.addingTimeInterval(windowSeconds * 2 + 60)
+        let window = QuotaWindow(
+            label: "5h", usedPercent: 80, resetsAt: resetsAt, windowMinutes: 300)
+
+        let rolled = window.rolledForward(now: now)
+        #expect(rolled.label == "5h")
+        #expect(rolled.usedPercent == 0)
+        #expect(rolled.windowMinutes == 300)
+        #expect(rolled.resetsAt == resetsAt.addingTimeInterval(windowSeconds * 3))
+        #expect(rolled.resetsAt! > now)  // never re-emerges as still-expired
+    }
+
+    @Test("An expired window barely past its boundary rolls forward exactly one cycle")
+    func rolledForwardOneCycle() {
+        let windowSeconds: TimeInterval = 10_080 * 60
+        let resetsAt = Date(timeIntervalSince1970: 1_000_000)
+        let now = resetsAt.addingTimeInterval(1)
+        let window = QuotaWindow(
+            label: "7d", usedPercent: 57, resetsAt: resetsAt, windowMinutes: 10_080)
+
+        let rolled = window.rolledForward(now: now)
+        #expect(rolled.usedPercent == 0)
+        #expect(rolled.resetsAt == resetsAt.addingTimeInterval(windowSeconds))
     }
 }

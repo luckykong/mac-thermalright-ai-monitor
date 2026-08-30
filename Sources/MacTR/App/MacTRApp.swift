@@ -511,11 +511,23 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
 
     // MARK: - Icon
 
+    /// (disconnected, paused) as last drawn — skips the rebuild below when
+    /// nothing the icon depicts has actually changed.
+    private var lastIconState: (Bool, Bool)?
+
+    /// Called every second from the status timer as well as on every menu
+    /// open and device-state notification, so redrawing unconditionally would
+    /// rebuild this custom-drawn NSImage — and push it through AppKit's
+    /// menu-bar scene hosting — once a second forever. `makeIcon` only reads
+    /// `disconnected`/`paused`, so memoizing on that pair is exact, not an
+    /// approximation.
     private func updateIcon() {
         guard let button = statusItem.button else { return }
-        button.image = makeIcon(
-            disconnected: !appState.isConnected,
-            paused: appState.isPaused)
+        let disconnected = !appState.isConnected
+        let paused = appState.isPaused
+        if let last = lastIconState, last == (disconnected, paused) { return }
+        lastIconState = (disconnected, paused)
+        button.image = makeIcon(disconnected: disconnected, paused: paused)
     }
 
     /// Connected = template display; paused = amber badge; disconnected = red badge.

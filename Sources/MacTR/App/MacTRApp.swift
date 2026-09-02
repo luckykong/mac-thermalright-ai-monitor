@@ -481,6 +481,13 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                 self?.openNativeMenuForDocumentation()
             }
+        } else if CommandLine.arguments.contains("--open-settings") {
+            // Verification hook: open Settings at launch so the window's
+            // steady-state cost can be measured with `heap`/`sample` without
+            // driving the menu by hand.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.openSettings()
+            }
         }
     }
 
@@ -1015,13 +1022,23 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
         showPreview()
     }
 
-    // Closing Preview never quits the menu-bar app.
+    // Closing Preview never quits the menu-bar app. Closing Settings or the
+    // schedule editor releases the window: an ordered-out NSHostingView keeps
+    // running its SwiftUI graph, and the settings TabView went on re-laying
+    // itself out on every status tick — leaking as it went — for days after
+    // the user had closed it.
     func windowWillClose(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow, window == previewWindow else { return }
-        previewTimer?.invalidate()
-        previewTimer = nil
-        previewManuallyRequested = false
-        appState.setPreviewActive(false)
+        guard let window = notification.object as? NSWindow else { return }
+        if window == previewWindow {
+            previewTimer?.invalidate()
+            previewTimer = nil
+            previewManuallyRequested = false
+            appState.setPreviewActive(false)
+        } else if window == settingsWindow {
+            settingsWindow = nil
+        } else if window == scheduleWindow {
+            scheduleWindow = nil
+        }
     }
 
     // MARK: - Actions
@@ -1087,6 +1104,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
             window.title = preferences.language.text(.scheduleWindowTitle)
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
+            window.delegate = self
             window.setContentSize(NSSize(width: 360, height: 260))
             window.center()
             scheduleWindow = window
@@ -1107,6 +1125,7 @@ final class StatusBarController: NSObject, NSApplicationDelegate, NSMenuDelegate
             window.title = preferences.language.text(.settingsWindowTitle)
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
+            window.delegate = self
             window.setContentSize(NSSize(width: 580, height: 760))
             window.center()
             settingsWindow = window

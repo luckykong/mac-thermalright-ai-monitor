@@ -88,5 +88,5 @@ dependency checks, and first-launch instructions.
 - `--open-settings` opens the settings window at launch, alongside `--open-menu`, so the
   window's steady-state cost can be measured with `heap` and `sample` without driving
   the menu by hand.
-- Tests run with `./scripts/test.sh` (47 tests). A bare `swift test` fails without a
+- Tests run with `./scripts/test.sh` (60 tests in 9 suites). A bare `swift test` fails without a
   full Xcode install because SwiftPM does not add swift-testing's framework paths.

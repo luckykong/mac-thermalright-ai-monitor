@@ -117,6 +117,7 @@ final class DailyScheduleController {
     private var notificationTokens: [NSObjectProtocol] = []
     private var workspaceTokens: [NSObjectProtocol] = []
     private var lastEvaluation = Date()
+    private var executedDay = ""
     private var executedKeys: Set<String> = []
     private var manualResumeUntil: Date?
     private var started = false
@@ -332,13 +333,15 @@ final class DailyScheduleController {
 
     private func execute(_ boundary: DailyScheduleBoundary) {
         guard preferences.scheduleEnabled else { return }
-        let day = dayKey(for: boundary.date)
-        let key = "\(boundary.kind.rawValue)-\(day)"
         // A key dedupes one boundary within its day. Earlier days can never
-        // fire again, so they are dropped here instead of accumulating for the
-        // life of the process.
-        executedKeys = executedKeys.filter { $0.hasSuffix("-\(day)") }
-        guard executedKeys.insert(key).inserted else { return }
+        // fire again, so the set is emptied on the first boundary of a new
+        // day rather than accumulating for the life of the process.
+        let day = dayKey(for: boundary.date)
+        if day != executedDay {
+            executedKeys.removeAll(keepingCapacity: true)
+            executedDay = day
+        }
+        guard executedKeys.insert(boundary.kind.rawValue).inserted else { return }
 
         switch boundary.kind {
         case .start:

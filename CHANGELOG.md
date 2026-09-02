@@ -2,7 +2,24 @@
 
 All notable changes to MacTR are documented here.
 
-## [Unreleased]
+## [1.4.6] - 2026-09-02
+
+1.4.5 was prepared but never tagged or released, so its entries below ship
+here for the first time. This section covers what came after it.
+
+### Added
+
+- The AGENTS card shows Codex's 5-hour quota window beside the 7-day one.
+  Codex's `rate_limits` has always carried a `primary` and a `secondary`
+  block, but only `primary` was read and assumed to be the 5-hour window.
+  Which key reports which duration moves with what is active on the account,
+  so while the 5-hour cap was suspended the card showed a single, mislabeled
+  window. Both blocks are parsed and ordered by their own `window_minutes`.
+- A Codex window whose reset time has passed is projected forward to the
+  cycle that covers "now" and shown at zero until a fresher reading lands.
+  Codex's reading is passive — it only updates when Codex runs — so the
+  5-hour bar used to blank out after any idle stretch longer than five hours,
+  which is most of a normal day.
 
 ### Fixed
 
@@ -17,12 +34,32 @@ All notable changes to MacTR are documented here.
   window open for 60 s against the LCD: before, 56 tab-index projections, 224
   tab images and 112 observation registrars accumulated at 13.9% CPU; after,
   none of them at 7.3%.
+- The menu-bar icon was redrawn and reassigned once a second whether or not
+  the connected/paused state it depicts had changed — `log show` recorded a
+  scene commit for the status item every second, forever. It is memoized on
+  that pair now and rebuilt only on a transition.
+- Network speed was double-counted under a system-wide VPN/proxy tunnel
+  (Clash TUN mode and the like): traffic crossed the `utun` interface and was
+  re-emitted on the physical adapter, so the dashboard showed tens of Mbps at
+  idle. Only `en<N>` interfaces — Wi-Fi, Ethernet, USB/Thunderbolt dongles —
+  are summed now, and the name check compares raw bytes so the per-tick path
+  allocates nothing.
+- Uptime, process count and fan RPM were illegible at a glance on the
+  1920×480 panel. Uptime and process count are two centred 16 pt lines at the
+  clock's brightness, and the fan label is 17 pt bold with a proportionally
+  larger rotor icon.
+- The daily schedule's executed-boundary set kept every key it had ever
+  inserted. It keeps the current day's only; earlier days can never fire
+  again.
 
 ### Notes
 
 - `--open-settings` opens the settings window at launch, alongside the
   existing `--open-menu`, so the window's steady-state cost can be measured
   with `heap` and `sample` without driving the menu by hand.
+- Healthy steady state on the reference machine after this release, LCD
+  connected, `balanced` mode: about 18% of one core and a 210 MB footprint,
+  flat — all of it the 4 fps frame pipeline. `eco` roughly halves it.
 
 ## [1.4.5] - 2026-07-30
 

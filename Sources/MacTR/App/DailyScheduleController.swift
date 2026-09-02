@@ -332,7 +332,12 @@ final class DailyScheduleController {
 
     private func execute(_ boundary: DailyScheduleBoundary) {
         guard preferences.scheduleEnabled else { return }
-        let key = executionKey(for: boundary)
+        let day = dayKey(for: boundary.date)
+        let key = "\(boundary.kind.rawValue)-\(day)"
+        // A key dedupes one boundary within its day. Earlier days can never
+        // fire again, so they are dropped here instead of accumulating for the
+        // life of the process.
+        executedKeys = executedKeys.filter { $0.hasSuffix("-\(day)") }
         guard executedKeys.insert(key).inserted else { return }
 
         switch boundary.kind {
@@ -354,9 +359,9 @@ final class DailyScheduleController {
         }
     }
 
-    private func executionKey(for boundary: DailyScheduleBoundary) -> String {
+    private func dayKey(for date: Date) -> String {
         let components = Calendar.current.dateComponents(
-            [.year, .month, .day], from: boundary.date)
-        return "\(boundary.kind.rawValue)-\(components.year ?? 0)-\(components.month ?? 0)-\(components.day ?? 0)"
+            [.year, .month, .day], from: date)
+        return "\(components.year ?? 0)-\(components.month ?? 0)-\(components.day ?? 0)"
     }
 }

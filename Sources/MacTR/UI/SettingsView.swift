@@ -1,4 +1,12 @@
 // SettingsView.swift — packaged menu-bar app settings
+//
+// Every tab is its own View so that Observation scopes each AppState read to
+// the tab that makes it. When the tab contents were computed properties of
+// SettingsView, the once-a-second status tick (frameCount, lastFrameSize)
+// re-evaluated the whole TabView, and AppKit's tab implementation leaked a set
+// of tab items on every pass: a settings window that had been closed for 2.7
+// days held 325k tab labels (about 800 MB) and its relayout was the largest
+// main-thread cost in the process.
 
 import AppKit
 import SwiftUI
@@ -11,10 +19,22 @@ enum SettingsTab: Hashable {
     case about
 }
 
-struct SettingsView: View {
-    @Bindable var state: AppState
-    @Bindable var preferences: AppPreferences
-    @Bindable var launchAtLogin: LaunchAtLoginController
+/// Localisation shorthand shared by the settings views.
+@MainActor
+private protocol LocalizedSettingsContent {
+    var preferences: AppPreferences { get }
+}
+
+extension LocalizedSettingsContent {
+    func t(_ key: L10nKey) -> String {
+        preferences.language.text(key)
+    }
+}
+
+struct SettingsView: View, LocalizedSettingsContent {
+    let state: AppState
+    let preferences: AppPreferences
+    let launchAtLogin: LaunchAtLoginController
     @State private var selectedTab: SettingsTab
     let pauseDisplay: () -> Void
     let resumeDisplay: () -> Void
@@ -34,35 +54,48 @@ struct SettingsView: View {
         self.resumeDisplay = resumeDisplay
     }
 
+    /// Reads only `preferences.language`, so the TabView is rebuilt on a
+    /// language change and on nothing else.
     var body: some View {
         TabView(selection: $selectedTab) {
             Tab(t(.general), systemImage: "gearshape", value: SettingsTab.general) {
-                generalSettings
+                GeneralSettingsTab(
+                    state: state, preferences: preferences, launchAtLogin: launchAtLogin)
             }
 
             Tab(t(.display), systemImage: "display", value: SettingsTab.display) {
-                displaySettings
+                DisplaySettingsTab(state: state, preferences: preferences)
             }
 
             Tab(t(.customCard), systemImage: "terminal", value: SettingsTab.customCard) {
-                customCardSettings
+                CustomCardSettingsTab(state: state, preferences: preferences)
             }
 
             Tab(t(.device), systemImage: "cable.connector", value: SettingsTab.device) {
-                deviceSettings
+                DeviceSettingsTab(
+                    state: state,
+                    preferences: preferences,
+                    pauseDisplay: pauseDisplay,
+                    resumeDisplay: resumeDisplay)
             }
 
             Tab(t(.about), systemImage: "info.circle", value: SettingsTab.about) {
-                aboutView
+                AboutSettingsTab(preferences: preferences)
             }
         }
         .frame(width: 580, height: 760)
         .environment(\.locale, preferences.language.locale)
     }
+}
 
-    // MARK: - General
+// MARK: - General
 
-    private var generalSettings: some View {
+private struct GeneralSettingsTab: View, LocalizedSettingsContent {
+    let state: AppState
+    @Bindable var preferences: AppPreferences
+    let launchAtLogin: LaunchAtLoginController
+
+    var body: some View {
         Form {
             Section(t(.language)) {
                 Picker(t(.interfaceLanguage), selection: $preferences.language) {
@@ -180,9 +213,84 @@ struct SettingsView: View {
         .padding()
     }
 
-    // MARK: - Display
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { launchAtLogin.isEnabled },
+            set: { launchAtLogin.setEnabled($0) })
+    }
 
-    private var displaySettings: some View {
+    private var startTimeBinding: Binding<Date> {
+        timeBinding(
+            get: { preferences.startMinutes },
+            set: { preferences.startMinutes = $0 })
+    }
+
+    private var closeTimeBinding: Binding<Date> {
+        timeBinding(
+            get: { preferences.closeMinutes },
+            set: { preferences.closeMinutes = $0 })
+    }
+
+    private func timeBinding(
+        get: @escaping () -> Int,
+        set: @escaping (Int) -> Void
+    ) -> Binding<Date> {
+        Binding(
+            get: {
+                let minutes = AppPreferences.normalizeMinutes(get())
+                var components = Calendar.current.dateComponents(
+                    [.year, .month, .day], from: Date())
+                components.hour = minutes / 60
+                components.minute = minutes % 60
+                components.second = 0
+                return Calendar.current.date(from: components) ?? Date()
+            },
+            set: { date in
+                let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+                set((components.hour ?? 0) * 60 + (components.minute ?? 0))
+            })
+    }
+
+    private var scheduleDescription: String {
+        guard preferences.scheduleEnabled else {
+            return t(.scheduleDisabledDescription)
+        }
+        let close = AppPreferences.formattedTime(minutes: preferences.closeMinutes)
+        if preferences.scheduleAction == .quitApp {
+            return AppLocalization.format(
+                .scheduleQuitDescription,
+                language: preferences.language,
+                close)
+        }
+        guard preferences.automaticStartEnabled else {
+            return AppLocalization.format(
+                .schedulePauseDescription,
+                language: preferences.language,
+                close)
+        }
+        let start = AppPreferences.formattedTime(minutes: preferences.startMinutes)
+        return AppLocalization.format(
+            .scheduleActiveDescription,
+            language: preferences.language,
+            start,
+            close)
+    }
+
+    private func openLoginItemsSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+}
+
+// MARK: - Display
+
+private struct DisplaySettingsTab: View, LocalizedSettingsContent {
+    let state: AppState
+    @Bindable var preferences: AppPreferences
+
+    var body: some View {
         Form {
             Section(t(.displaySet)) {
                 Picker(t(.activeSet), selection: $preferences.currentSet) {
@@ -236,9 +344,20 @@ struct SettingsView: View {
         .padding()
     }
 
-    // MARK: - Custom Card
+    private var brightnessBinding: Binding<Double> {
+        Binding(
+            get: { Double(preferences.brightness) },
+            set: { preferences.brightness = Int($0) })
+    }
+}
 
-    private var customCardSettings: some View {
+// MARK: - Custom Card
+
+private struct CustomCardSettingsTab: View, LocalizedSettingsContent {
+    let state: AppState
+    @Bindable var preferences: AppPreferences
+
+    var body: some View {
         Form {
             Section(t(.customScriptCard)) {
                 Toggle(t(.showCustomScriptOutput), isOn: $preferences.customScriptEnabled)
@@ -364,9 +483,59 @@ struct SettingsView: View {
         .padding()
     }
 
-    // MARK: - Device
+    private var scriptStatusText: String {
+        switch state.customScriptSnapshot.state {
+        case .disabled: t(.scriptDisabled)
+        case .unconfigured: t(.scriptChoose)
+        case .ready: t(.scriptReady)
+        case .running: t(.scriptRunning)
+        case .succeeded: t(.scriptSucceeded)
+        case .failed: t(.scriptFailed)
+        case .timedOut: t(.scriptTimedOut)
+        case .missing: t(.scriptMissing)
+        case .invalid: t(.scriptInvalid)
+        }
+    }
 
-    private var deviceSettings: some View {
+    private var scriptStatusColor: SwiftUI.Color {
+        switch state.customScriptSnapshot.state {
+        case .succeeded: .green
+        case .running: .cyan
+        case .failed, .timedOut, .missing, .invalid: .red
+        case .unconfigured: .orange
+        case .disabled, .ready: SwiftUI.Color(nsColor: .secondaryLabelColor)
+        }
+    }
+
+    private func chooseCustomScript() {
+        let panel = NSOpenPanel()
+        panel.title = t(.chooseScriptTitle)
+        panel.prompt = t(.choose)
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.treatsFilePackagesAsDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        preferences.customScriptPath = url.path
+        if preferences.customScriptDisplayName.isEmpty {
+            preferences.customScriptDisplayName =
+                url.deletingPathExtension().lastPathComponent
+        }
+        state.applySettings()
+    }
+}
+
+// MARK: - Device
+
+/// The only tab that reads the per-frame counters, so the once-a-second
+/// status update re-evaluates this Form and nothing above it.
+private struct DeviceSettingsTab: View, LocalizedSettingsContent {
+    let state: AppState
+    let preferences: AppPreferences
+    let pauseDisplay: () -> Void
+    let resumeDisplay: () -> Void
+
+    var body: some View {
         Form {
             Section(t(.output)) {
                 LabeledContent(t(.state)) {
@@ -412,9 +581,20 @@ struct SettingsView: View {
         .padding()
     }
 
-    // MARK: - About
+    private var statusColor: SwiftUI.Color {
+        if state.isPaused { return SwiftUI.Color.orange }
+        if state.isConnected { return SwiftUI.Color.green }
+        if case .error = state.runtimeState { return SwiftUI.Color.red }
+        return SwiftUI.Color(nsColor: .secondaryLabelColor)
+    }
+}
 
-    private var aboutView: some View {
+// MARK: - About
+
+private struct AboutSettingsTab: View, LocalizedSettingsContent {
+    let preferences: AppPreferences
+
+    var body: some View {
         VStack(spacing: 12) {
             Image(systemName: "display.2")
                 .font(.system(size: 48))
@@ -424,7 +604,7 @@ struct SettingsView: View {
                 .font(.title)
                 .fontWeight(.semibold)
 
-            Text("\(t(.version)) \(appVersion) (\(appBuild))")
+            Text("\(t(.version)) \(AppVersion.short) (\(AppVersion.build))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -449,143 +629,11 @@ struct SettingsView: View {
         }
         .padding(28)
     }
-
-    // MARK: - Bindings & Helpers
-
-    private func t(_ key: L10nKey) -> String {
-        preferences.language.text(key)
-    }
-
-    private var launchAtLoginBinding: Binding<Bool> {
-        Binding(
-            get: { launchAtLogin.isEnabled },
-            set: { launchAtLogin.setEnabled($0) })
-    }
-
-    private var brightnessBinding: Binding<Double> {
-        Binding(
-            get: { Double(preferences.brightness) },
-            set: { preferences.brightness = Int($0) })
-    }
-
-    private var startTimeBinding: Binding<Date> {
-        timeBinding(
-            get: { preferences.startMinutes },
-            set: { preferences.startMinutes = $0 })
-    }
-
-    private var closeTimeBinding: Binding<Date> {
-        timeBinding(
-            get: { preferences.closeMinutes },
-            set: { preferences.closeMinutes = $0 })
-    }
-
-    private func timeBinding(
-        get: @escaping () -> Int,
-        set: @escaping (Int) -> Void
-    ) -> Binding<Date> {
-        Binding(
-            get: {
-                let minutes = AppPreferences.normalizeMinutes(get())
-                var components = Calendar.current.dateComponents(
-                    [.year, .month, .day], from: Date())
-                components.hour = minutes / 60
-                components.minute = minutes % 60
-                components.second = 0
-                return Calendar.current.date(from: components) ?? Date()
-            },
-            set: { date in
-                let components = Calendar.current.dateComponents([.hour, .minute], from: date)
-                set((components.hour ?? 0) * 60 + (components.minute ?? 0))
-            })
-    }
-
-    private var scheduleDescription: String {
-        guard preferences.scheduleEnabled else {
-            return t(.scheduleDisabledDescription)
-        }
-        let close = AppPreferences.formattedTime(minutes: preferences.closeMinutes)
-        if preferences.scheduleAction == .quitApp {
-            return AppLocalization.format(
-                .scheduleQuitDescription,
-                language: preferences.language,
-                close)
-        }
-        guard preferences.automaticStartEnabled else {
-            return AppLocalization.format(
-                .schedulePauseDescription,
-                language: preferences.language,
-                close)
-        }
-        let start = AppPreferences.formattedTime(minutes: preferences.startMinutes)
-        return AppLocalization.format(
-            .scheduleActiveDescription,
-            language: preferences.language,
-            start,
-            close)
-    }
-
-    private var statusColor: SwiftUI.Color {
-        if state.isPaused { return SwiftUI.Color.orange }
-        if state.isConnected { return SwiftUI.Color.green }
-        if case .error = state.runtimeState { return SwiftUI.Color.red }
-        return SwiftUI.Color(nsColor: .secondaryLabelColor)
-    }
-
-    private var appVersion: String { AppVersion.short }
-
-    private var appBuild: String { AppVersion.build }
-
-    private func openLoginItemsSettings() {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
-        else { return }
-        NSWorkspace.shared.open(url)
-    }
-
-    private var scriptStatusText: String {
-        switch state.customScriptSnapshot.state {
-        case .disabled: t(.scriptDisabled)
-        case .unconfigured: t(.scriptChoose)
-        case .ready: t(.scriptReady)
-        case .running: t(.scriptRunning)
-        case .succeeded: t(.scriptSucceeded)
-        case .failed: t(.scriptFailed)
-        case .timedOut: t(.scriptTimedOut)
-        case .missing: t(.scriptMissing)
-        case .invalid: t(.scriptInvalid)
-        }
-    }
-
-    private var scriptStatusColor: SwiftUI.Color {
-        switch state.customScriptSnapshot.state {
-        case .succeeded: .green
-        case .running: .cyan
-        case .failed, .timedOut, .missing, .invalid: .red
-        case .unconfigured: .orange
-        case .disabled, .ready: SwiftUI.Color(nsColor: .secondaryLabelColor)
-        }
-    }
-
-    private func chooseCustomScript() {
-        let panel = NSOpenPanel()
-        panel.title = t(.chooseScriptTitle)
-        panel.prompt = t(.choose)
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.treatsFilePackagesAsDirectories = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        preferences.customScriptPath = url.path
-        if preferences.customScriptDisplayName.isEmpty {
-            preferences.customScriptDisplayName =
-                url.deletingPathExtension().lastPathComponent
-        }
-        state.applySettings()
-    }
 }
 
-struct ScheduleTimeEditorView: View {
+// MARK: - Schedule editor
+
+struct ScheduleTimeEditorView: View, LocalizedSettingsContent {
     @Bindable var preferences: AppPreferences
 
     var body: some View {
@@ -620,10 +668,6 @@ struct ScheduleTimeEditorView: View {
         .padding()
         .frame(width: 360, height: 260)
         .environment(\.locale, preferences.language.locale)
-    }
-
-    private func t(_ key: L10nKey) -> String {
-        preferences.language.text(key)
     }
 
     private func timeBinding(isStart: Bool) -> Binding<Date> {

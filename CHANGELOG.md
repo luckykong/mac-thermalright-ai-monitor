@@ -2,6 +2,28 @@
 
 All notable changes to MacTR are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- CPU and memory grew for as long as the app ran: after 2.7 days one copy was
+  at roughly 30% CPU and 800 MB. Closing the settings window only hid it, and
+  its SwiftUI `TabView` went on re-laying itself out on every once-a-second
+  status tick because the frame counter was read in the same view body as the
+  tabs; AppKit's tab implementation leaked a set of tab items on each pass
+  (325k tab labels in a window that had been closed for days). Each tab is now
+  its own view, so a status tick re-evaluates the Device tab alone, and the
+  settings and schedule windows are released when closed. Measured with the
+  window open for 60 s against the LCD: before, 56 tab-index projections, 224
+  tab images and 112 observation registrars accumulated at 13.9% CPU; after,
+  none of them at 7.3%.
+
+### Notes
+
+- `--open-settings` opens the settings window at launch, alongside the
+  existing `--open-menu`, so the window's steady-state cost can be measured
+  with `heap` and `sample` without driving the menu by hand.
+
 ## [1.4.5] - 2026-07-30
 
 ### Fixed

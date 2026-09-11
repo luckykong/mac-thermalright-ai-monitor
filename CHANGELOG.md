@@ -2,6 +2,36 @@
 
 All notable changes to MacTR are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- The Codex card showed 100% remaining on both windows while the account was
+  38% into its weekly limit. Two causes. Codex now tags each `rate_limits`
+  reading with the pool it describes, and a guardian subagent session draws on
+  a model-specific side pool (`limit_id` `codex_bengalfox`, "GPT-5.3-Codex-
+  Spark") that reports its own 5-hour and 7-day windows at 0% used; taking
+  whichever reading was newest let that pool win. And the quota scan only
+  visited the four most recent day directories, which are keyed by the day a
+  session *started* — the real reading sat in a rollout begun seven days
+  earlier. Only the account pool (`limit_id` `codex`, or no id at all in
+  older versions) is read now, and the scan covers 45 day directories filtered
+  by each file's modification time.
+- Pro-tier plans (`plan_type` `pro`, `prolite`) have no 5-hour cap, so the
+  card shows the weekly window alone for them even if a reading carries a
+  shorter block; Plus keeps 5h and 7d side by side. An unnamed plan shows
+  whatever the reading carries.
+
+### Notes
+
+- Command Line Tools for Xcode 27.0 ship the macOS 27 SDK, in which SwiftUI's
+  `@State` is a macro implemented by a `SwiftUIMacros` plugin — and ship no
+  such plugin, so every SwiftUI file failed with "plugin for module
+  'SwiftUIMacros' not found". `scripts/sdk-env.sh`, sourced by `test.sh` and
+  the packaging script, builds against the newest 26.x SDK still on disk when
+  the plugin is absent, and does nothing under a full Xcode or an explicit
+  `SDKROOT`.
+
 ## [1.4.6] - 2026-09-02
 
 1.4.5 was prepared but never tagged or released, so its entries below ship

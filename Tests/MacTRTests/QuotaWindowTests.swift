@@ -78,6 +78,73 @@ struct QuotaWindowTests {
         #expect(QuotaWindow.codexWindows(from: ["primary": "not a dictionary"]).isEmpty)
     }
 
+    // MARK: - Pools and plans
+
+    /// The real account-pool reading from a Pro Lite account, sampled
+    /// 2026-09-11 from a rollout started 2026-09-04: only the 7-day window
+    /// exists, `secondary` is JSON null, and the plan is named.
+    @Test("A Pro Lite account reading yields the weekly window alone")
+    func proLiteAccountReading() {
+        let windows = QuotaWindow.codexWindows(from: [
+            "limit_id": "codex",
+            "limit_name": NSNull(),
+            "primary": ["used_percent": 38.0, "window_minutes": 10_080, "resets_at": 1_789_474_020],
+            "secondary": NSNull(),
+            "plan_type": "prolite",
+        ])
+        #expect(windows.map(\.label) == ["7d"])
+        #expect(windows.map(\.usedPercent) == [38.0])
+    }
+
+    /// The reading that produced the "100% remaining" display: a guardian
+    /// subagent drawing on the model-specific `codex_bengalfox` pool, which
+    /// reports both windows at 0% and no plan. Sampled 2026-09-11.
+    @Test("A model-specific side pool is ignored entirely")
+    func sidePoolIsIgnored() {
+        let windows = QuotaWindow.codexWindows(from: [
+            "limit_id": "codex_bengalfox",
+            "limit_name": "GPT-5.3-Codex-Spark",
+            "primary": ["used_percent": 0.0, "window_minutes": 300, "resets_at": 1_789_154_493],
+            "secondary": ["used_percent": 0.0, "window_minutes": 10_080, "resets_at": 1_789_741_293],
+            "plan_type": NSNull(),
+        ])
+        #expect(windows.isEmpty)
+    }
+
+    @Test("A reading without limit_id (older Codex) counts as the account pool")
+    func missingLimitIdIsAccountPool() {
+        #expect(QuotaWindow.isCodexAccountPool([:]))
+        #expect(QuotaWindow.isCodexAccountPool(["limit_id": "codex"]))
+        #expect(!QuotaWindow.isCodexAccountPool(["limit_id": "codex_bengalfox"]))
+    }
+
+    @Test("Pro plans drop a 5-hour block even when one is reported")
+    func proPlansDropShortWindow() {
+        for plan in ["pro", "prolite", "Pro"] {
+            let windows = QuotaWindow.codexWindows(from: [
+                "limit_id": "codex",
+                "primary": ["used_percent": 0.0, "window_minutes": 300, "resets_at": 1_789_154_493],
+                "secondary": ["used_percent": 38.0, "window_minutes": 10_080, "resets_at": 1_789_474_020],
+                "plan_type": plan,
+            ])
+            #expect(windows.map(\.label) == ["7d"], "plan \(plan)")
+        }
+    }
+
+    @Test("Plus keeps both windows, and an unnamed plan keeps whatever is reported")
+    func plusAndUnknownPlansKeepShortWindow() {
+        let blocks: [String: Any] = [
+            "limit_id": "codex",
+            "primary": ["used_percent": 18.0, "window_minutes": 300, "resets_at": 1_787_691_728],
+            "secondary": ["used_percent": 34.0, "window_minutes": 10_080, "resets_at": 1_788_278_528],
+        ]
+        var plus = blocks; plus["plan_type"] = "plus"
+        #expect(QuotaWindow.codexWindows(from: plus).map(\.label) == ["5h", "7d"])
+        var unnamed = blocks; unnamed["plan_type"] = NSNull()
+        #expect(QuotaWindow.codexWindows(from: unnamed).map(\.label) == ["5h", "7d"])
+        #expect(QuotaWindow.codexWindows(from: blocks).map(\.label) == ["5h", "7d"])
+    }
+
     // MARK: - rolledForward
 
     @Test("rolledForward leaves an unexpired window untouched")

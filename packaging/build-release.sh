@@ -23,7 +23,9 @@ DIST_DIR="${ROOT_DIR}/dist/v${VERSION}"
 ICONSET_DIR="${WORK_DIR}/AppIcon.iconset"
 ICON_PREVIEW="${WORK_DIR}/app-icon.png"
 ARCHIVE="${DOWNLOAD_DIR}/libusb-${LIBUSB_VERSION}.tar.bz2"
-SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+# Command Line Tools 27 need an older SDK for SwiftUI; see the helper.
+source "${ROOT_DIR}/scripts/sdk-env.sh"
+SDK_PATH="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
 
 mkdir -p "${DOWNLOAD_DIR}" "${SOURCE_DIR}" "${DIST_DIR}"
 

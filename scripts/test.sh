@@ -14,6 +14,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Command Line Tools 27 need an older SDK for SwiftUI; see the helper.
+source scripts/sdk-env.sh
+
 CLT_DEVELOPER="/Library/Developer/CommandLineTools/Library/Developer"
 
 if [[ "$(xcode-select -p)" == *CommandLineTools* \

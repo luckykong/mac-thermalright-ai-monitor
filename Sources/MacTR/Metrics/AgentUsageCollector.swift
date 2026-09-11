@@ -133,16 +133,43 @@ struct QuotaWindow: Sendable, Equatable {
             windowMinutes: minutes))
     }
 
+    /// Codex tags every `rate_limits` block with the pool it describes.
+    /// `limit_id == "codex"` is the account-wide pool the subscription pays
+    /// for; versions before the field existed reported that pool alone, so a
+    /// missing id counts as it too. Anything else is a model-specific side
+    /// pool — `codex_bengalfox` / "GPT-5.3-Codex-Spark" so far, drawn on by
+    /// guardian subagent sessions — which reports its own 5-hour and 7-day
+    /// windows at 0% used, on plans that have no 5-hour window at all. Taking
+    /// whichever reading was newest let that pool win, and the card sat at
+    /// 100% remaining while the real pool was 38% spent.
+    static func isCodexAccountPool(_ rateLimits: [String: Any]) -> Bool {
+        guard let id = rateLimits["limit_id"] as? String else { return true }
+        return id == "codex"
+    }
+
+    /// Pro-tier plans (`plan_type` "pro", "prolite") have no 5-hour cap; Plus
+    /// ("plus") still does. A block shorter than a day is dropped for them
+    /// even if reported, so the card shows the weekly limit alone. An absent
+    /// or unknown plan keeps whatever the reading carries.
+    static func codexPlanHasShortWindow(_ planType: String?) -> Bool {
+        guard let planType else { return true }
+        return !planType.lowercased().hasPrefix("pro")
+    }
+
     /// Parses a Codex `rate_limits` object into its windows, ordered
     /// shortest-first (5h before 7d) regardless of which JSON key — `primary`
     /// or `secondary` — reported which duration. Codex has been observed
     /// flipping this depending on which caps are active on the account: while
     /// the 5-hour cap was suspended, `primary` reported the 7-day figure
-    /// alone and `secondary` was absent.
+    /// alone and `secondary` was absent. Side pools yield nothing, and Pro
+    /// plans keep only windows of a day or longer (see above).
     static func codexWindows(from rateLimits: [String: Any]) -> [QuotaWindow] {
-        ["primary", "secondary"]
+        guard isCodexAccountPool(rateLimits) else { return [] }
+        let keepShort = codexPlanHasShortWindow(rateLimits["plan_type"] as? String)
+        return ["primary", "secondary"]
             .compactMap { rateLimits[$0] as? [String: Any] }
             .compactMap(fromCodexBlock)
+            .filter { keepShort || $0.minutes >= 1440 }
             .sorted { $0.minutes < $1.minutes }
             .map(\.window)
     }
@@ -222,7 +249,14 @@ struct AgentsSnapshot: Sendable {
 final class AgentUsageCollector: @unchecked Sendable {
 
     private let fm = FileManager.default
-    private let home = FileManager.default.homeDirectoryForCurrentUser.path
+    private let home: String
+
+    /// `home` is injectable so a test can lay out a fake `~/.codex/sessions`
+    /// tree; production reads the real one.
+    init(home: String = FileManager.default.homeDirectoryForCurrentUser.path) {
+        self.home = home
+    }
+
     private let claudeQuota = ClaudeUsageFetcher()
 
     // Incremental state, reset on day rollover
@@ -597,14 +631,7 @@ final class AgentUsageCollector: @unchecked Sendable {
         // plus older days only to locate the most recent session for the
         // activity/quota display when nothing has run today.
         let todayStart = Calendar.current.startOfDay(for: Date())
-        let df = DateFormatter()
-        df.dateFormat = "yyyy/MM/dd"
-        var dirs: [String] = []
-        for back in 0..<14 {
-            if let d = Calendar.current.date(byAdding: .day, value: -back, to: Date()) {
-                dirs.append(root + "/" + df.string(from: d))
-            }
-        }
+        let dirs = codexSessionDirs(root: root, daysBack: 14)
 
         // Bounded the same way as Claude's. The fourteen-day window already caps
         // how many directories are visited, but not how many sessions a single
@@ -745,37 +772,50 @@ final class AgentUsageCollector: @unchecked Sendable {
            !codexQuotaCache.isEmpty { return }
         codexQuotaLastScan = Date()
 
+        // Rollouts are filed under the day their session STARTED, and a
+        // session can stay active for a week or more — the reading that
+        // mattered in the field sat in a rollout begun seven days earlier,
+        // outside the four directories this used to visit, so a subagent's
+        // side-pool reading from today's directory won instead. The
+        // directory window is therefore wide and the real filter is each
+        // file's modification time; a listing of an absent day costs nothing.
         let root = home + "/.codex/sessions"
-        let df = DateFormatter(); df.dateFormat = "yyyy/MM/dd"
         let cutoff = Date().addingTimeInterval(-3 * 86400)
-        for back in 0..<4 {
-            guard let day = Calendar.current.date(byAdding: .day, value: -back, to: Date())
+        let scan = scanSessions(
+            dirs: codexSessionDirs(root: root, daysBack: 45),
+            todayStart: cutoff, limit: Self.maxScannedFiles)
+        for entry in scan.files {
+            // Search backwards in fixed-size chunks. Large rollout files no
+            // longer allocate a 16 MB Data buffer on every quota refresh.
+            guard let line = newestMatchingLine(
+                path: entry.path,
+                maxBytes: 16 * 1024 * 1024,
+                containing: "used_percent"),
+                let obj = parseJSON(line),
+                let ts = obj["timestamp"] as? String,
+                let payload = obj["payload"] as? [String: Any],
+                let limits = payload["rate_limits"] as? [String: Any]
             else { continue }
-            let dir = root + "/" + df.string(from: day)
-            for file in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] {
-                guard file.hasSuffix(".jsonl") else { continue }
-                let path = dir + "/" + file
-                guard let attrs = try? fm.attributesOfItem(atPath: path),
-                      let mtime = attrs[.modificationDate] as? Date, mtime >= cutoff
-                else { continue }
-                // Search backwards in fixed-size chunks. Large rollout files no
-                // longer allocate a 16 MB Data buffer on every quota refresh.
-                guard let line = newestMatchingLine(
-                    path: path,
-                    maxBytes: 16 * 1024 * 1024,
-                    containing: "used_percent"),
-                    let obj = parseJSON(line),
-                    let ts = obj["timestamp"] as? String,
-                    let payload = obj["payload"] as? [String: Any],
-                    let limits = payload["rate_limits"] as? [String: Any]
-                else { continue }
-                if ts > codexQuotaTS {
-                    let windows = QuotaWindow.codexWindows(from: limits)
-                    guard !windows.isEmpty else { continue }
-                    codexQuotaTS = ts
-                    codexQuotaCache = windows
-                }
+            if ts > codexQuotaTS {
+                // Empty for a side pool (see QuotaWindow.isCodexAccountPool):
+                // such a reading must not advance the timestamp either, or a
+                // fresher account reading in another file would be rejected.
+                let windows = QuotaWindow.codexWindows(from: limits)
+                guard !windows.isEmpty else { continue }
+                codexQuotaTS = ts
+                codexQuotaCache = windows
             }
+        }
+    }
+
+    /// `<root>/YYYY/MM/DD` for today and the `daysBack - 1` days before it.
+    /// Codex files each rollout under the day its session started.
+    private func codexSessionDirs(root: String, daysBack: Int) -> [String] {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy/MM/dd"
+        return (0..<daysBack).compactMap { back in
+            Calendar.current.date(byAdding: .day, value: -back, to: Date())
+                .map { root + "/" + df.string(from: $0) }
         }
     }
 

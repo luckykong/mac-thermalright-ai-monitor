@@ -9,9 +9,9 @@ All notable changes to MacTR are documented here.
 - The Codex card showed 100% remaining on both windows while the account was
   38% into its weekly limit. Two causes. Codex now tags each `rate_limits`
   reading with the pool it describes, and a guardian subagent session draws on
-  a model-specific side pool (`limit_id` `codex_bengalfox`, "GPT-5.3-Codex-
-  Spark") that reports its own 5-hour and 7-day windows at 0% used; taking
-  whichever reading was newest let that pool win. And the quota scan only
+  a model-specific side pool (`limit_id` `codex_bengalfox`,
+  "GPT-5.3-Codex-Spark") that reports its own 5-hour and 7-day windows at 0%
+  used; taking whichever reading was newest let that pool win. And the quota scan only
   visited the four most recent day directories, which are keyed by the day a
   session *started* — the real reading sat in a rollout begun seven days
   earlier. Only the account pool (`limit_id` `codex`, or no id at all in

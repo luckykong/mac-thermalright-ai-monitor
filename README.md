@@ -179,14 +179,15 @@ chmod +x packaging/build-release.sh
 
 ```text
 .build/release-package/MacTR.app
-dist/v1.4.4/MacTR-v1.4.4-macos-arm64.dmg
-dist/v1.4.4/MacTR-v1.4.4-macos-arm64.zip
-dist/v1.4.4/SHA256SUMS.txt
-dist/v1.4.4/AppIcon.icns
-dist/v1.4.4/app-icon.png
+dist/v<版本>/MacTR-v<版本>-macos-arm64.dmg
+dist/v<版本>/MacTR-v<版本>-macos-arm64.zip
+dist/v<版本>/SHA256SUMS.txt
+dist/v<版本>/AppIcon.icns
+dist/v<版本>/app-icon.png
 ```
 
-`dist/` 下前三项是分发产物,后两项是打包过程中生成的图标副本。
+`<版本>` 取自 `Sources/MacTR/Resources/Info.plist` 的 `CFBundleShortVersionString`
+(例如 `1.4.7`)。`dist/` 下前三项是分发产物,后两项是打包过程中生成的图标副本。
 
 ### 4. 验证产物
 
@@ -196,9 +197,11 @@ codesign --verify --deep --strict --verbose=2 \
 
 otool -L .build/release-package/MacTR.app/Contents/MacOS/MacTR
 
-cd dist/v1.4.4
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+  Sources/MacTR/Resources/Info.plist)"
+cd "dist/v${VERSION}"
 shasum -a 256 -c SHA256SUMS.txt
-hdiutil verify MacTR-v1.4.4-macos-arm64.dmg
+hdiutil verify "MacTR-v${VERSION}-macos-arm64.dmg"
 ```
 
 `otool -L` 的结果中不应出现 `/opt/homebrew`、`.build` 或开发机绝对路径。
@@ -228,10 +231,12 @@ swift build -c release
 ./scripts/test.sh
 ```
 
-测试使用 swift-testing。它随命令行工具一起安装，但 SwiftPM 不会自动把它的
-framework 与动态库目录加入搜索路径，直接执行 `swift test` 会报
-`no such module 'Testing'`。上面的脚本负责补齐这些路径；如果装了完整版
-Xcode，脚本会跳过这些参数直接调用 `swift test`。
+测试使用 swift-testing。它随命令行工具一起安装，但 Swift 6.4 之前的 SwiftPM
+不会自动把它的 framework 与动态库目录加入搜索路径，直接执行 `swift test` 会报
+`no such module 'Testing'`；SwiftPM 6.4（Command Line Tools 27）能自己找到 framework，
+却会随机找不到它的宏插件（"plugin for module 'TestingMacros' not found"）。上面的脚本
+两种情况都处理：老工具链补齐搜索路径，新工具链用 `-load-plugin-library` 显式加载
+`libTestingMacros.dylib`；装了完整版 Xcode 时直接调用 `swift test`。
 
 ## 运行模式
 

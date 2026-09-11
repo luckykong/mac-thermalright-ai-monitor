@@ -31,6 +31,15 @@ All notable changes to MacTR are documented here.
   the packaging script, builds against the newest 26.x SDK still on disk when
   the plugin is absent, and does nothing under a full Xcode or an explicit
   `SDKROOT`.
+- Under the same Command Line Tools, SwiftPM 6.4 finds swift-testing's
+  framework on its own but resolves its macro plugin through the search paths
+  only intermittently: forced recompiles of the test target failed 5 times out
+  of 8 with "plugin for module 'TestingMacros' not found", serial or parallel,
+  with or without `SDKROOT`. `scripts/test.sh` now loads
+  `libTestingMacros.dylib` explicitly with `-load-plugin-library`, which never
+  failed in the same trials, and adds the old framework search paths only for
+  toolchains before Swift 6.4. The README's packaging paths no longer name a
+  fixed version.
 
 ## [1.4.6] - 2026-09-02
 

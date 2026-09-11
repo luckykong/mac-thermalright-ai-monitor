@@ -70,6 +70,7 @@ dependency checks, and first-launch instructions.
 - Verified with `--snapshot` against the real session tree: 7d 62% remaining, three
   days to reset, matching the 38% `used_percent` on disk; the 1.4.6 build rendered
   5h 100% / 7d 100% from the same data.
-- Tests run with `./scripts/test.sh` (69 tests in 10 suites). A bare `swift test` fails
-  without a full Xcode install because SwiftPM does not add swift-testing's framework
-  paths.
+- Tests run with `./scripts/test.sh` (69 tests in 10 suites). Without a full Xcode
+  install a bare `swift test` is unreliable: SwiftPM before 6.4 does not add
+  swift-testing's framework paths, and SwiftPM 6.4 under Command Line Tools 27 finds the
+  framework but intermittently not its macro plugin. The script handles both cases.

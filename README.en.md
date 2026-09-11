@@ -212,15 +212,16 @@ Main outputs:
 
 ```text
 .build/release-package/MacTR.app
-dist/v1.4.4/MacTR-v1.4.4-macos-arm64.dmg
-dist/v1.4.4/MacTR-v1.4.4-macos-arm64.zip
-dist/v1.4.4/SHA256SUMS.txt
-dist/v1.4.4/AppIcon.icns
-dist/v1.4.4/app-icon.png
+dist/v<version>/MacTR-v<version>-macos-arm64.dmg
+dist/v<version>/MacTR-v<version>-macos-arm64.zip
+dist/v<version>/SHA256SUMS.txt
+dist/v<version>/AppIcon.icns
+dist/v<version>/app-icon.png
 ```
 
-Under `dist/`, the first three are the distributable artifacts; the last two are icon
-copies produced along the way.
+`<version>` is `CFBundleShortVersionString` from `Sources/MacTR/Resources/Info.plist`
+(for example `1.4.7`). Under `dist/`, the first three are the distributable artifacts;
+the last two are icon copies produced along the way.
 
 ### 4. Verify the packages
 
@@ -230,9 +231,11 @@ codesign --verify --deep --strict --verbose=2 \
 
 otool -L .build/release-package/MacTR.app/Contents/MacOS/MacTR
 
-cd dist/v1.4.4
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+  Sources/MacTR/Resources/Info.plist)"
+cd "dist/v${VERSION}"
 shasum -a 256 -c SHA256SUMS.txt
-hdiutil verify MacTR-v1.4.4-macos-arm64.dmg
+hdiutil verify "MacTR-v${VERSION}-macos-arm64.dmg"
 ```
 
 `otool -L` should not show `/opt/homebrew`, `.build`, or an absolute development-machine
@@ -264,10 +267,14 @@ Use `packaging/build-release.sh` for a transferable private build.
 ./scripts/test.sh
 ```
 
-The tests use swift-testing. It ships with the Command Line Tools, but SwiftPM does
-not add its framework and dylib directories to the search paths, so a bare
-`swift test` fails with `no such module 'Testing'`. The script supplies those paths;
-with a full Xcode install it skips them and calls `swift test` directly.
+The tests use swift-testing. It ships with the Command Line Tools, but SwiftPM before
+Swift 6.4 does not add its framework and dylib directories to the search paths, so a
+bare `swift test` fails with `no such module 'Testing'`; SwiftPM 6.4 (Command Line
+Tools 27) finds the framework itself but intermittently fails to find its macro plugin
+("plugin for module 'TestingMacros' not found"). The script handles both: it supplies
+the search paths on older toolchains and loads `libTestingMacros.dylib` explicitly with
+`-load-plugin-library` on newer ones; with a full Xcode install it calls `swift test`
+directly.
 
 ## Modes
 

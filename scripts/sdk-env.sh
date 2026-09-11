@@ -20,17 +20,23 @@ if [[ -z "${SDKROOT:-}" ]]; then
     if [[ "${_clt}" == *CommandLineTools* \
           && ! -e "${_clt}/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" ]]; then
         _default="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || echo 0)"
-        if (( ${_default%%.*} >= 27 )); then
-            for _sdk in "${_clt}/SDKs/MacOSX26.sdk" "${_clt}"/SDKs/MacOSX26.*.sdk; do
-                if [[ -d "${_sdk}" ]]; then
-                    SDKROOT="$(cd "${_sdk}" && pwd -P)"
-                    export SDKROOT
-                    echo "[sdk] Command Line Tools ${_default} lack the SwiftUI macro plugin;" \
-                         "building against $(basename "${SDKROOT}")" >&2
-                    break
-                fi
-            done
+        _major="${_default%%.*}"
+        if [[ "${_major}" =~ ^[0-9]+$ ]] && (( _major >= 27 )); then
+            # Apple's unversioned MacOSX26.sdk link points at the newest 26.x.
+            # Without it, pick the highest minor version numerically — a glob
+            # is lexical and would rank 26.10 before 26.5.
+            _sdk="${_clt}/SDKs/MacOSX26.sdk"
+            if [[ ! -d "${_sdk}" ]]; then
+                _sdk="$(ls -d "${_clt}"/SDKs/MacOSX26.*.sdk 2>/dev/null \
+                        | sort -t. -k2,2n | tail -n 1)"
+            fi
+            if [[ -n "${_sdk}" && -d "${_sdk}" ]]; then
+                SDKROOT="$(cd "${_sdk}" && pwd -P)"
+                export SDKROOT
+                echo "[sdk] Command Line Tools ${_default} lack the SwiftUI macro plugin;" \
+                     "building against $(basename "${SDKROOT}")" >&2
+            fi
         fi
     fi
-    unset _clt _default _sdk
+    unset _clt _default _major _sdk
 fi

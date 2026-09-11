@@ -74,6 +74,67 @@ struct CodexQuotaScanTests {
         #expect(codex.quotaWindows.map(\.usedPercent) == [38.0])
     }
 
+    /// One rollout can switch model mid-thread, so an account-pool reading may
+    /// be followed by a side-pool one in the same file. The newest line alone
+    /// would discard the file; the scan must keep going to the account line.
+    @Test("An account reading older than a side-pool line in the same file is still found")
+    func accountLineBehindSidePoolLineInOneFile() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mactr-codex-quota-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let sessions = home.appendingPathComponent(".codex/sessions")
+        let now = Date()
+        let weekly = Int(now.addingTimeInterval(4 * 86400).timeIntervalSince1970)
+        let short = Int(now.addingTimeInterval(3 * 3600).timeIntervalSince1970)
+
+        try Self.write(
+            [
+                Self.tokenCountLine(
+                    at: now.addingTimeInterval(-120),
+                    rateLimits: """
+                    {"limit_id":"codex","primary":{"used_percent":41.0,"window_minutes":10080,"resets_at":\(weekly)},"secondary":null,"plan_type":"prolite"}
+                    """),
+                Self.tokenCountLine(
+                    at: now.addingTimeInterval(-30),
+                    rateLimits: """
+                    {"limit_id":"codex_bengalfox","primary":{"used_percent":0.0,"window_minutes":300,"resets_at":\(short)},"secondary":{"used_percent":0.0,"window_minutes":10080,"resets_at":\(weekly)},"plan_type":null}
+                    """),
+            ],
+            to: Self.dayDir(root: sessions, daysAgo: 0), name: "rollout-mixed.jsonl")
+
+        let codex = AgentUsageCollector(home: home.path).collect().codex
+        #expect(codex.quotaWindows.map(\.label) == ["7d"])
+        #expect(codex.quotaWindows.map(\.usedPercent) == [41.0])
+    }
+
+    /// The directory window is wide precisely so that the modification-time
+    /// cut-off can do the real filtering: a rollout untouched for longer than
+    /// three days is not a source, however recent its directory looks.
+    @Test("A rollout not modified within three days is ignored even in a recent directory")
+    func staleFileIsIgnoredByModificationTime() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mactr-codex-quota-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let sessions = home.appendingPathComponent(".codex/sessions")
+        let now = Date()
+        let weekly = Int(now.addingTimeInterval(4 * 86400).timeIntervalSince1970)
+
+        let dir = Self.dayDir(root: sessions, daysAgo: 1)
+        try Self.write(
+            [Self.tokenCountLine(
+                at: now.addingTimeInterval(-5 * 86400),
+                rateLimits: """
+                {"limit_id":"codex","primary":{"used_percent":9.0,"window_minutes":10080,"resets_at":\(weekly)},"secondary":null,"plan_type":"prolite"}
+                """)],
+            to: dir, name: "rollout-stale.jsonl")
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-5 * 86400)],
+            ofItemAtPath: dir.appendingPathComponent("rollout-stale.jsonl").path)
+
+        let codex = AgentUsageCollector(home: home.path).collect().codex
+        #expect(codex.quotaWindows.isEmpty)
+    }
+
     @Test("With only a side-pool reading available the card shows no quota rather than 100%")
     func sidePoolAloneShowsNothing() throws {
         let home = FileManager.default.temporaryDirectory

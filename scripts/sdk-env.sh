@@ -27,8 +27,9 @@ if [[ -z "${SDKROOT:-}" ]]; then
             # is lexical and would rank 26.10 before 26.5.
             _sdk="${_clt}/SDKs/MacOSX26.sdk"
             if [[ ! -d "${_sdk}" ]]; then
+                # `|| true`: no match must not abort a caller running set -e.
                 _sdk="$(ls -d "${_clt}"/SDKs/MacOSX26.*.sdk 2>/dev/null \
-                        | sort -t. -k2,2n | tail -n 1)"
+                        | sort -t. -k2,2n | tail -n 1 || true)"
             fi
             if [[ -n "${_sdk}" && -d "${_sdk}" ]]; then
                 SDKROOT="$(cd "${_sdk}" && pwd -P)"

@@ -143,7 +143,11 @@ struct QuotaWindow: Sendable, Equatable {
     /// whichever reading was newest let that pool win, and the card sat at
     /// 100% remaining while the real pool was 38% spent.
     static func isCodexAccountPool(_ rateLimits: [String: Any]) -> Bool {
-        guard let id = rateLimits["limit_id"] as? String else { return true }
+        // Absent: a Codex from before the field existed, account pool only.
+        guard let raw = rateLimits["limit_id"] else { return true }
+        // Present but not a string (JSON null arrives as NSNull): an unknown
+        // pool, not the account one.
+        guard let id = raw as? String else { return false }
         return id == "codex"
     }
 
@@ -277,8 +281,12 @@ final class AgentUsageCollector: @unchecked Sendable {
     /// not touch its parent directory's mtime, so that test would skip exactly
     /// the projects being written to right now.
     private static let maxScannedFiles = 200
-    /// See `updateCodexQuota`: the walk stops early, so this is a safety net.
+    /// See `updateCodexQuota`: the walk normally stops after a handful of
+    /// files, so the file cap is a safety net; the byte budget bounds the one
+    /// case where it cannot stop early (no account reading anywhere yet).
     private static let maxQuotaScanFiles = 2000
+    private static let maxQuotaFileBytes = 16 * 1024 * 1024
+    private static let maxQuotaScanBytes = 64 * 1024 * 1024
     private var claudeScanOverflowed = false
     private var codexScanOverflowed = false
     /// Both halves are always accumulated, so flipping `countsCachedTokens`
@@ -314,6 +322,10 @@ final class AgentUsageCollector: @unchecked Sendable {
     private var codexQuotaCache: [QuotaWindow] = []
     private var codexQuotaTS = ""            // newest reading's timestamp seen so far
     private var codexQuotaDate = Date.distantPast  // the same instant, for mtime cut-offs
+    /// Rollouts that yielded no usable account reading, keyed by path with the
+    /// mtime and size seen. An unchanged file cannot answer differently, so it
+    /// is skipped until it changes; entries drop out with the scan's window.
+    private var codexQuotaRejected: [String: (mtime: Date, size: UInt64)] = [:]
     private var codexQuotaLastScan: Date?
 
     func collect() -> AgentsSnapshot {
@@ -795,39 +807,59 @@ final class AgentUsageCollector: @unchecked Sendable {
         let scan = scanSessions(
             dirs: codexSessionDirs(root: root, daysBack: 45),
             todayStart: cutoff, limit: Self.maxQuotaScanFiles)
+        let current = Set(scan.files.map(\.path))
+        var rejected = codexQuotaRejected.filter { current.contains($0.key) }
+        var budget = Self.maxQuotaScanBytes
         for entry in scan.files {
             // Newest first, so nothing after this file can be newer either.
             // A little slack covers a line flushed a moment after its event.
             if entry.mtime < codexQuotaDate.addingTimeInterval(-5) { break }
-            // The newest ACCOUNT-pool line, not merely the newest line: one
-            // rollout can carry a side-pool reading after an account one.
+            if let seen = rejected[entry.path],
+               seen.mtime == entry.mtime, seen.size == entry.size {
+                continue
+            }
+            // Without an account reading to stop at, the budget is what
+            // bounds a tree of large side-pool-only rollouts; whatever is
+            // left over is picked up by the next scan, cheaply, because the
+            // files inspected this time are remembered above.
+            guard budget > 0 else { break }
+            let window = min(Self.maxQuotaFileBytes, budget)
+            budget -= min(Int(clamping: entry.size), window)
+            // The newest USABLE account-pool line, not merely the newest
+            // line: one rollout can carry a side-pool reading, or an account
+            // reading with no displayable window, after a usable one.
             guard let line = newestMatchingLine(
                 path: entry.path,
-                maxBytes: 16 * 1024 * 1024,
+                maxBytes: window,
                 containing: "used_percent",
                 accepting: { self.codexAccountReading(in: $0) != nil }),
-                let (ts, limits) = codexAccountReading(in: line)
-            else { continue }
-            if ts > codexQuotaTS {
-                let windows = QuotaWindow.codexWindows(from: limits)
-                guard !windows.isEmpty else { continue }
-                codexQuotaTS = ts
-                codexQuotaDate = Self.parseTimestamp(ts) ?? entry.mtime
-                codexQuotaCache = windows
+                let reading = codexAccountReading(in: line)
+            else {
+                rejected[entry.path] = (entry.mtime, entry.size)
+                continue
+            }
+            if reading.ts > codexQuotaTS {
+                codexQuotaTS = reading.ts
+                codexQuotaDate = Self.parseTimestamp(reading.ts) ?? entry.mtime
+                codexQuotaCache = reading.windows
             }
         }
+        codexQuotaRejected = rejected
     }
 
-    /// The timestamp and `rate_limits` of a rollout line, provided it is a
-    /// reading of the account pool (see `QuotaWindow.isCodexAccountPool`).
-    private func codexAccountReading(in line: String) -> (String, [String: Any])? {
+    /// The timestamp and displayable windows of a rollout line, provided it
+    /// is a reading of the account pool with at least one window left after
+    /// the plan rules (see `QuotaWindow.codexWindows(from:)`).
+    private func codexAccountReading(in line: String)
+        -> (ts: String, windows: [QuotaWindow])?
+    {
         guard let obj = parseJSON(line),
               let ts = obj["timestamp"] as? String,
               let payload = obj["payload"] as? [String: Any],
-              let limits = payload["rate_limits"] as? [String: Any],
-              QuotaWindow.isCodexAccountPool(limits)
+              let limits = payload["rate_limits"] as? [String: Any]
         else { return nil }
-        return (ts, limits)
+        let windows = QuotaWindow.codexWindows(from: limits)
+        return windows.isEmpty ? nil : (ts, windows)
     }
 
     /// Rollout timestamps are ISO 8601 in UTC, with fractional seconds since

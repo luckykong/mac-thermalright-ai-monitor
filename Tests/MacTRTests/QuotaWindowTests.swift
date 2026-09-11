@@ -116,6 +116,8 @@ struct QuotaWindowTests {
         #expect(QuotaWindow.isCodexAccountPool([:]))
         #expect(QuotaWindow.isCodexAccountPool(["limit_id": "codex"]))
         #expect(!QuotaWindow.isCodexAccountPool(["limit_id": "codex_bengalfox"]))
+        // Present but null is an unknown pool, not a missing field.
+        #expect(!QuotaWindow.isCodexAccountPool(["limit_id": NSNull()]))
     }
 
     @Test("Pro plans drop a 5-hour block even when one is reported")

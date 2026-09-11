@@ -277,6 +277,8 @@ final class AgentUsageCollector: @unchecked Sendable {
     /// not touch its parent directory's mtime, so that test would skip exactly
     /// the projects being written to right now.
     private static let maxScannedFiles = 200
+    /// See `updateCodexQuota`: the walk stops early, so this is a safety net.
+    private static let maxQuotaScanFiles = 2000
     private var claudeScanOverflowed = false
     private var codexScanOverflowed = false
     /// Both halves are always accumulated, so flipping `countsCachedTokens`
@@ -311,6 +313,7 @@ final class AgentUsageCollector: @unchecked Sendable {
     // rather than that JSON key — see updateCodexQuota).
     private var codexQuotaCache: [QuotaWindow] = []
     private var codexQuotaTS = ""            // newest reading's timestamp seen so far
+    private var codexQuotaDate = Date.distantPast  // the same instant, for mtime cut-offs
     private var codexQuotaLastScan: Date?
 
     func collect() -> AgentsSnapshot {
@@ -768,8 +771,10 @@ final class AgentUsageCollector: @unchecked Sendable {
     /// slowly; lines without a populated block don't contain "used_percent" and are
     /// rejected cheaply, so the reversed scan stops at each file's newest reading fast.
     private func updateCodexQuota() {
-        if let last = codexQuotaLastScan, Date().timeIntervalSince(last) < 60,
-           !codexQuotaCache.isEmpty { return }
+        // Throttled whether or not the last scan found anything: a tree that
+        // holds only side-pool readings would otherwise be re-walked on every
+        // refresh.
+        if let last = codexQuotaLastScan, Date().timeIntervalSince(last) < 60 { return }
         codexQuotaLastScan = Date()
 
         // Rollouts are filed under the day their session STARTED, and a
@@ -779,33 +784,60 @@ final class AgentUsageCollector: @unchecked Sendable {
         // side-pool reading from today's directory won instead. The
         // directory window is therefore wide and the real filter is each
         // file's modification time; a listing of an absent day costs nothing.
+        //
+        // The cap is far above the token scan's: files are visited newest
+        // first and the walk stops at the first one too old to hold a newer
+        // reading than the best account reading so far, so in practice only
+        // a handful are opened. The cap only bites if more than that many
+        // files changed within the cut-off after the last account reading.
         let root = home + "/.codex/sessions"
         let cutoff = Date().addingTimeInterval(-3 * 86400)
         let scan = scanSessions(
             dirs: codexSessionDirs(root: root, daysBack: 45),
-            todayStart: cutoff, limit: Self.maxScannedFiles)
+            todayStart: cutoff, limit: Self.maxQuotaScanFiles)
         for entry in scan.files {
-            // Search backwards in fixed-size chunks. Large rollout files no
-            // longer allocate a 16 MB Data buffer on every quota refresh.
+            // Newest first, so nothing after this file can be newer either.
+            // A little slack covers a line flushed a moment after its event.
+            if entry.mtime < codexQuotaDate.addingTimeInterval(-5) { break }
+            // The newest ACCOUNT-pool line, not merely the newest line: one
+            // rollout can carry a side-pool reading after an account one.
             guard let line = newestMatchingLine(
                 path: entry.path,
                 maxBytes: 16 * 1024 * 1024,
-                containing: "used_percent"),
-                let obj = parseJSON(line),
-                let ts = obj["timestamp"] as? String,
-                let payload = obj["payload"] as? [String: Any],
-                let limits = payload["rate_limits"] as? [String: Any]
+                containing: "used_percent",
+                accepting: { self.codexAccountReading(in: $0) != nil }),
+                let (ts, limits) = codexAccountReading(in: line)
             else { continue }
             if ts > codexQuotaTS {
-                // Empty for a side pool (see QuotaWindow.isCodexAccountPool):
-                // such a reading must not advance the timestamp either, or a
-                // fresher account reading in another file would be rejected.
                 let windows = QuotaWindow.codexWindows(from: limits)
                 guard !windows.isEmpty else { continue }
                 codexQuotaTS = ts
+                codexQuotaDate = Self.parseTimestamp(ts) ?? entry.mtime
                 codexQuotaCache = windows
             }
         }
+    }
+
+    /// The timestamp and `rate_limits` of a rollout line, provided it is a
+    /// reading of the account pool (see `QuotaWindow.isCodexAccountPool`).
+    private func codexAccountReading(in line: String) -> (String, [String: Any])? {
+        guard let obj = parseJSON(line),
+              let ts = obj["timestamp"] as? String,
+              let payload = obj["payload"] as? [String: Any],
+              let limits = payload["rate_limits"] as? [String: Any],
+              QuotaWindow.isCodexAccountPool(limits)
+        else { return nil }
+        return (ts, limits)
+    }
+
+    /// Rollout timestamps are ISO 8601 in UTC, with fractional seconds since
+    /// some Codex version and without before it.
+    private static func parseTimestamp(_ ts: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: ts) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: ts)
     }
 
     /// `<root>/YYYY/MM/DD` for today and the `daysBack - 1` days before it.
@@ -998,13 +1030,16 @@ final class AgentUsageCollector: @unchecked Sendable {
         }
     }
 
-    /// Return the newest complete line containing `needle`, scanning backwards
-    /// with bounded memory. The total search window may be large, but each read is
-    /// only 256 KB plus at most one partial line.
+    /// Return the newest complete line containing `needle` that `accepting`
+    /// also approves, scanning backwards with bounded memory. The total search
+    /// window may be large, but each read is only 256 KB plus at most one
+    /// partial line. The predicate runs only on lines that contain the needle,
+    /// so it may afford to parse them.
     private func newestMatchingLine(
         path: String,
         maxBytes: Int,
-        containing needle: String
+        containing needle: String,
+        accepting: (String) -> Bool = { _ in true }
     ) -> String? {
         guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? fh.close() }
@@ -1036,7 +1071,7 @@ final class AgentUsageCollector: @unchecked Sendable {
                 {
                     guard !parts[index].isEmpty,
                           let line = String(data: Data(parts[index]), encoding: .utf8),
-                          line.contains(needle)
+                          line.contains(needle), accepting(line)
                     else { continue }
                     return line
                 }

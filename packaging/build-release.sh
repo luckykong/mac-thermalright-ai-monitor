@@ -68,7 +68,21 @@ env \
         --arch "${ARCH}" \
         --scratch-path "${SWIFT_BUILD_DIR}"
 
-EXECUTABLE="${SWIFT_BUILD_DIR}/${ARCH}-apple-macosx/release/MacTR"
+# Ask SwiftPM where it put the products instead of assuming the layout: the
+# build system that ships with Swift 6.4 writes to out/Products/Release, the
+# older one to <arch>-apple-macosx/release. Same flags and environment as the
+# build above, so the answer matches it.
+BIN_PATH="$(env \
+    MACOSX_DEPLOYMENT_TARGET="${MIN_MACOS}" \
+    SDKROOT="${SDK_PATH}" \
+    PKG_CONFIG_PATH="${DEPS_PREFIX}/lib/pkgconfig" \
+    PKG_CONFIG_LIBDIR="${DEPS_PREFIX}/lib/pkgconfig" \
+    swift build \
+        --configuration release \
+        --arch "${ARCH}" \
+        --scratch-path "${SWIFT_BUILD_DIR}" \
+        --show-bin-path)"
+EXECUTABLE="${BIN_PATH}/MacTR"
 if [[ ! -x "${EXECUTABLE}" ]]; then
     printf "Release executable not found: %s\n" "${EXECUTABLE}" >&2
     exit 1

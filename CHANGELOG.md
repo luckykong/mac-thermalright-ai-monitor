@@ -40,6 +40,10 @@ All notable changes to MacTR are documented here.
   failed in the same trials, and adds the old framework search paths only for
   toolchains before Swift 6.4. The README's packaging paths no longer name a
   fixed version.
+- The packaging script no longer assumes where SwiftPM puts the release
+  executable. The build system that ships with Swift 6.4 writes products to
+  `out/Products/Release` rather than `<arch>-apple-macosx/release`, so the
+  script asks `swift build --show-bin-path` with the same flags as the build.
 
 ## [1.4.6] - 2026-09-02
 

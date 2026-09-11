@@ -27,7 +27,7 @@
 - **当前项目**和**它最后说的话** —— 消息里的 Markdown 表格会被渲染成对齐的表格,而不是原始的 `| … |` 文本。
 - **计划 / 步骤进度** —— `步骤 4/6` 徽章 + 分段进度条,从 Codex 的 `update_plan` 和 Claude 的 `TodoWrite` 解析而来。上一轮已完成的旧计划会自动消失。
 - **今日 Token 用量** —— 总量 + In/Out,用简洁的 `万 / 亿` 格式。是否把命中提示词缓存、被重复读取的上下文算进去,可在设置里自行选择(见下)。
-- **剩余额度** —— 剩余百分比 + 重置倒计时,5 小时与 7 天两个窗口并排显示。Codex 直接从会话日志里的 `rate_limits` 读取;Claude 需要额外配置一个缓存文件(见下)。
+- **剩余额度** —— 剩余百分比 + 重置倒计时,5 小时与 7 天两个窗口并排显示(Codex 的 Pro / Pro Lite 账户没有 5 小时限制,只显示 7 天)。Codex 直接从会话日志里的 `rate_limits` 读取;Claude 需要额外配置一个缓存文件(见下)。
 - **实时状态** —— agent 工作时该栏**缓慢呼吸**,完成一轮或需要你输入时**闪烁**约 10 秒提醒。
 
 ### 🖥️ 系统面板
@@ -135,6 +135,11 @@
 - 支持 Swift 6.1 的 Xcode / Command Line Tools（建议 Xcode 16.3 或更新版本）；
   只使用 Command Line Tools 时也要确保 `swift`、
   `xcrun`、`clang`、`make`、`codesign`、`hdiutil` 和 `iconutil` 可用。
+  注意 **Command Line Tools for Xcode 27.0** 自带的 macOS 27 SDK 把 SwiftUI 的
+  `@State` 改成了宏,却没有附带实现它的 `SwiftUIMacros` 插件,直接 `swift build`
+  会报 "plugin for module 'SwiftUIMacros' not found"。`scripts/test.sh` 和打包脚本
+  都会通过 `scripts/sdk-env.sh` 自动改用机器上仍保留的 26.x SDK;手动构建时请先
+  `source scripts/sdk-env.sh`(完整 Xcode 不受影响)。
 - [Homebrew](https://brew.sh/) 提供的 `pkg-config`。打包脚本会自行下载并从
   源码构建固定的 libusb 1.0.30，不使用 Homebrew 的 libusb 作为运行依赖。
 
@@ -283,7 +288,15 @@ Codex 把 `rate_limits.primary`/`secondary`(已用百分比 + 重置时间,通�
 只有实际运行 Codex 才会更新,不像 Claude 那样主动轮询。如果最后一条读数的重置时间已经过去
 (比如 Codex 空闲超过了一个 5 小时窗口),MacTR 会按已知的窗口时长顺推到当前仍然有效的那个
 周期、并把已用百分比归零显示,而不是让额度条直接消失 —— 等 Codex 下次运行、拿到新读数后,
-这个乐观估算会立刻被真实数字替换。Claude Code 不把限额信息写到磁盘任何地方 ——
+这个乐观估算会立刻被真实数字替换。
+
+读数的挑选有两条规则。第一,`rate_limits` 带有 `limit_id`,只采信账户池(`limit_id` 为
+`codex`,老版本没有这个字段的也算);guardian 子代理走的是模型专用的旁路池(`codex_bengalfox`,
+"GPT-5.3-Codex-Spark"),自带 5 小时 + 7 天两个窗口且永远 0% 已用,如果按"谁最新用谁"它会把
+真实账户池顶掉,让卡片长期停在 100% 剩余。第二,`plan_type` 为 `pro` / `prolite` 的账户没有
+5 小时限制,即便读数里带了短窗口也只显示 7 天;`plus` 两个窗口都显示;没有写明计划类型的读数
+按原样显示。此外 rollout 文件按会话**开始**日期归档,而一个会话可以连续跑上一周,所以扫描
+按文件修改时间取最近三天内有变动的文件,而不只看最近几天的目录。Claude Code 不把限额信息写到磁盘任何地方 ——
 `~/.claude/projects`、`stats-cache.json`、`sessions/` 里都没有。唯一的来源就是
 带 OAuth token 请求 `https://api.anthropic.com/api/oauth/usage`。
 

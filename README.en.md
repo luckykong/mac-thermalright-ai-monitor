@@ -36,7 +36,8 @@ for each agent, side by side:
   K / M / B in English. Whether context re-read from the prompt cache counts toward the
   total is your choice (see below).
 - **Remaining quota** — % left + reset countdown, with the 5-hour and 7-day windows shown
-  side by side. Codex comes straight from `rate_limits` in its session logs; Claude's
+  side by side (Codex Pro / Pro Lite accounts have no 5-hour cap and show the 7-day window
+  alone). Codex comes straight from `rate_limits` in its session logs; Claude's
   comes from the one network request described below.
 - **Live status** — the column **breathes** while an agent is working and **flashes** for
   ~10 s when it finishes a turn or needs your input.
@@ -166,6 +167,12 @@ Homebrew, Swift, or Xcode.
 - Xcode or Command Line Tools with Swift 6.1 support (Xcode 16.3 or newer is
   recommended). If you use Command Line Tools only, verify that `swift`, `xcrun`,
   `clang`, `make`, `codesign`, `hdiutil`, and `iconutil` are available.
+  Note that **Command Line Tools for Xcode 27.0** ship the macOS 27 SDK, in which
+  SwiftUI's `@State` is a macro, without the `SwiftUIMacros` plugin that implements
+  it, so a bare `swift build` fails with "plugin for module 'SwiftUIMacros' not
+  found". `scripts/test.sh` and the packaging script fall back to the 26.x SDK still
+  on disk through `scripts/sdk-env.sh`; `source scripts/sdk-env.sh` before building
+  by hand (a full Xcode install is unaffected).
 - `pkg-config` from [Homebrew](https://brew.sh/). The packaging script downloads and
   builds pinned libusb 1.0.30 itself; Homebrew libusb is not a runtime dependency.
 
@@ -324,8 +331,19 @@ Codex is actually running, unlike Claude's active poll below. If the last readin
 time has already passed (Codex idle longer than a 5-hour window, say), MacTR rolls it
 forward to the cycle that currently covers "now" using the window's known length and shows
 it at zero usage, rather than letting the bar disappear — the next real reading replaces
-that optimistic guess as soon as Codex runs again. Claude Code persists no such thing anywhere on
-disk — not in `~/.claude/projects`, `stats-cache.json` or `sessions/`. The only source is
+that optimistic guess as soon as Codex runs again.
+
+Two rules decide which reading is used. First, `rate_limits` carries a `limit_id`, and only
+the account pool counts (`limit_id` `codex`, or no field at all in older versions). A
+guardian subagent draws on a model-specific side pool (`codex_bengalfox`,
+"GPT-5.3-Codex-Spark") that reports its own 5-hour and 7-day windows at a permanent 0%
+used; "newest reading wins" let it displace the real pool and park the card at 100%
+remaining. Second, accounts whose `plan_type` is `pro` or `prolite` have no 5-hour cap, so
+they show the weekly window alone even if a reading carries a shorter block; `plus` shows
+both, and a reading without a plan name is shown as it is. Rollouts are also filed under
+the day their session *started*, and a session can run for a week, so the scan picks files
+by modification time (the last three days) rather than by directory date. Claude Code
+persists no such thing anywhere on disk — not in `~/.claude/projects`, `stats-cache.json` or `sessions/`. The only source is
 an authenticated `GET https://api.anthropic.com/api/oauth/usage`.
 
 MacTR makes that **one** request and shows the 5-hour and 7-day windows side by side:
